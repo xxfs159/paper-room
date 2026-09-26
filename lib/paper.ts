@@ -1,4 +1,4 @@
-export type Block={id:string;text:string;page:number};
+export type Block={id:string;text:string;page:number;formulaCrop?:{x:number;y:number;w:number;h:number}};
 export type PaperPage={number:number;label:string;blocks:Block[];scanned:boolean;sourcePages?:number[]};
 export type Paper={title:string;pages:PaperPage[];url?:string;kind:'pdf'|'text'};
 export type ModelResult={translations:{id:string;text:string}[];answer:string;citations:{id:string;quote:string}[];warnings:string[];glossary:{term:string;translation:string}[];transcript:string[]};
@@ -27,21 +27,30 @@ export function groupBySections(pages:PaperPage[]):PaperPage[]{
  flush();return sections;
 }
 type Item={str:string;transform:number[];width:number;height:number;hasEOL?:boolean};
-export function extractBlocks(items:Item[],page:number,width:number):Block[]{
+export function extractBlocks(items:Item[],page:number,width:number,height=width*1.4):Block[]{
  // Preserve the PDF's own item order. Most scholarly PDFs encode column order already.
- const groups:{text:string;y:number;x:number;height:number}[]=[];let current:{text:string;y:number;x:number;height:number}|null=null;let lastX=0,lastWidth=0;
+ const groups:{text:string;y:number;x:number;height:number;right:number;bottom:number;top:number}[]=[];let current:typeof groups[number]|null=null;let lastX=0,lastWidth=0;
  for(const item of items){if(!item.str.trim())continue;const x=item.transform[4],y=item.transform[5],h=Math.max(item.height||Math.abs(item.transform[3]),1);const same=current&&Math.abs(y-current.y)<Math.max(2,h*.3)&&x>=lastX-3&&x-(lastX+lastWidth)<Math.max(40,width*.08);
- if(same&&current){const gap=x-(lastX+lastWidth);current.text+=(gap>h*.12&&!current.text.endsWith(' ')?' ':'')+item.str;}else{if(current)groups.push(current);current={text:item.str,y,x,height:h};}lastX=x;lastWidth=item.width;
+ if(same&&current){const gap=x-(lastX+lastWidth);current.text+=(gap>h*.12&&!current.text.endsWith(' ')?' ':'')+item.str;current.right=Math.max(current.right,x+item.width);current.bottom=Math.min(current.bottom,y);current.top=Math.max(current.top,y+h);}else{if(current)groups.push(current);current={text:item.str,y,x,height:h,right:x+item.width,bottom:y,top:y+h};}lastX=x;lastWidth=item.width;
  }
  if(current)groups.push(current);
- const paras:string[]=[];let value='',prev:typeof groups[number]|undefined;
+ const paras:{text:string;rows:typeof groups}[]=[];let value='',rows:typeof groups=[],prev:typeof groups[number]|undefined;
  for(const row of groups){const gap=prev?prev.y-row.y:0;const boundary=!!prev&&(gap< -2||gap>Math.max(4,prev.height*1.45)||Math.abs(row.x-prev.x)>width*.25||row.height>prev.height*1.3||prev.height>row.height*1.3||value.length>1700);
- if(boundary&&value){paras.push(value);value='';}value+=(value?'\n':'')+row.text;prev=row;
+ if(boundary&&value){paras.push({text:value,rows});value='';rows=[];}value+=(value?'\n':'')+row.text;rows.push(row);prev=row;
  }
- if(value)paras.push(value);
+ if(value)paras.push({text:value,rows});
  // Keep front matter and fragmented formula labels together without dropping text.
- const compact:string[]=[];let short='';const flush=()=>{if(short){compact.push(short);short='';}};
- for(const para of paras){const heading=/^(abstract|references|conclusion|摘要|引言|结论|\d+(\.\d+)*\s+[A-Z])(?:\b|\s)/i.test(para.trim())&&para.length<120;
- if(heading||para.length>150){flush();compact.push(para);}else{if(short.length+para.length>550)flush();short+=(short?'\n':'')+para;}}
- flush();return compact.flatMap(splitText).map((text,i)=>({id:`p${page}-b${i+1}`,text,page}));
+ const compact:typeof paras=[];let short='',shortRows:typeof groups=[];const flush=()=>{if(short){compact.push({text:short,rows:shortRows});short='';shortRows=[];}};
+ for(const para of paras){const heading=/^(abstract|references|conclusion|摘要|引言|结论|\d+(\.\d+)*\s+[A-Z])(?:\b|\s)/i.test(para.text.trim())&&para.text.length<120;
+ if(heading||para.text.length>150){flush();compact.push(para);}else{if(short.length+para.text.length>550)flush();short+=(short?'\n':'')+para.text;shortRows.push(...para.rows);}}
+ flush();return compact.flatMap(({text,rows})=>splitText(text).map(part=>{
+  const lines=part.split('\n').map(line=>line.trim()).filter(Boolean);
+  const mathLines=lines.filter(line=>/[=√∑∫∂∇≤≥≈∞]|(?:softmax|log|exp|sin|cos)\s*\(/i.test(line));
+  const fragmented=mathLines.length>0&&(lines.length>=3||/[√∑∫]/.test(part))&&lines.some(line=>line.length<=3);
+  if(!fragmented||!rows.length)return {text:part,page};
+  const left=Math.min(...rows.map(r=>r.x)),right=Math.max(...rows.map(r=>r.right));
+  const bottom=Math.min(...rows.map(r=>r.bottom)),top=Math.max(...rows.map(r=>r.top));
+  const pad=8;
+  return {text:part,page,formulaCrop:{x:Math.max(0,(left-pad)/width),y:Math.max(0,(height-top-pad)/height),w:Math.min(1,(right-left+pad*2)/width),h:Math.min(1,(top-bottom+pad*2)/height)}};
+ })).map((block,i)=>({...block,id:`p${page}-b${i+1}`}));
 }
