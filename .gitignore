@@ -45,5 +45,9 @@ next-env.d.ts
 /outputs/
 /work/
 
-# Hosting identity stays with the live Site, not this export.
-.openai/
+# Local deployment archives
+site-v*.tar.gz
+site.tar.gz
+
+# Generated TypeScript state
+*.tsbuildinfo

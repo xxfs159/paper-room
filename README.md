@@ -1,33 +1,39 @@
 # Paper Room · 论文阅读室
 
-上传 PDF 或粘贴论文原文，按章节阅读、对照翻译、查看原页图表，并选段提问。支持在页面中输入 DeepSeek 或 OpenAI API Key。密钥只保留在当前页面内存中，刷新后清除；网站向所选模型服务转发请求。
+在线阅读 PDF 论文：按章节浏览原文、对照翻译、查看图表与公式，并就选中的段落或原文截图提问。
 
-在线体验：[Paper Room](https://paper-reading-room.foxwellablin.chatgpt.site)
+[打开网站](https://paper-reading-room.foxwellablin.chatgpt.site/)
+
+## 功能
+
+- 在浏览器内导入 PDF（最多 20 MB、100 页）或粘贴文本；阅读进度仅保留在当前页面。
+- 按 PDF 提取的标题组织章节，同时保留原页码和原页画面。
+- 逐节或全文翻译、讲解概念、勾选段落提问。
+- 从原页框选公式，或上传截图提问。PDF 文字提取拆散的公式可查看原稿裁图。
+- 连接 DeepSeek 或 OpenAI API；Key 只保存在当前页面内存，刷新后清除。请求经站点服务端转发到所选服务商。
+- 使用 AI 前需要通过 ChatGPT 登录。模型输出可能出错，请对照原 PDF 核查。
 
 ## 本地运行
 
-需要 Node.js >= 22.13 和 pnpm 11。项目基于 Vinext / Cloudflare Workers。
+需要 Node.js 22.13 或更高版本及 pnpm 11。
 
 ```bash
-corepack enable
-pnpm install
+pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-本地开发可打开终端给出的地址。服务端 API 使用 Cloudflare Workers 运行时。正式部署版本通过 ChatGPT Sites 提供登录身份：`app/api/assist/route.ts` 调用 `getChatGPTUser()`，直接改用其他托管平台时需要实现对应的登录验证与部署配置。代码仓库本身不会自动部署网站。
+在开发环境打开终端显示的本地地址。部署版的登录依赖 Sites 提供的 ChatGPT 身份验证；本地开发使用项目内的模拟登录流程。无需把 API Key 写入仓库，直接在网页「连接 AI」输入。
 
-## 使用方法
+```bash
+pnpm exec tsc --noEmit
+pnpm build
+```
 
-1. 导入 PDF 或粘贴论文内容。
-2. 点击右上角「连接 AI」，选择 DeepSeek 或 OpenAI，输入对应的 API Key。
-3. 按章节翻译、讲解，勾选段落后提问；用原 PDF 页码核对公式和图表。
+## 主要代码
 
-API 调用可能产生服务商费用。PDF 的标题与段落从可选文字中提取；扫描版可使用页面文字识别，复杂排版请以原页为准。
+- `app/reader.tsx`：论文阅读、PDF 渲染、章节导航、截图与交互
+- `lib/paper.ts`：PDF 文本分段和章节识别
+- `app/api/assist/route.ts`：模型请求、输入校验和回答引用校验
+- `app/chatgpt-auth.ts`：站点登录辅助函数
 
-## 代码位置
-
-- `app/reader.tsx`：导入、阅读、章节导航和选段交互
-- `lib/paper.ts`：段落提取与章节划分
-- `app/api/assist/route.ts`：模型请求、输出校验与引用检查
-- `app/globals.css`：界面样式
-
+PDF 文字提取无法保证公式和分栏完全正确；原页画面用于核对。示例论文为 *Attention Is All You Need*，原文归论文作者所有。
