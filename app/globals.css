@@ -188,3 +188,5 @@ body{font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft Ya
 .highlight-list button span{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden}
 .highlight-list button small{color:#a18e58;font-size:10px}
 @media(max-width:620px){.reader-tools{width:100%;justify-content:flex-start}.reader-tool-button{font-size:11px;padding:6px 7px}}
+
+.local-reading-controls{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:10px;font-size:12px;color:#536da8}.local-reading-controls button{text-decoration:underline;text-underline-offset:3px}

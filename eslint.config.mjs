@@ -12,6 +12,10 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Generated runtime state and vendored PDF.js assets are not app source.
+    ".sites-runtime/**",
+    ".wrangler/**",
+    "public/pdfjs/**",
   ]),
   {
     files: ["components/ui/**/*.{ts,tsx}", "hooks/use-mobile.ts"],

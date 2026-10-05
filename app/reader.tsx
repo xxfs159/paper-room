@@ -1,128 +1,2608 @@
-'use client';
-import {useState,useRef,useEffect,useCallback} from 'react';
-import {Tabs,TabsList,TabsTrigger,TabsContent} from '@/components/ui/tabs';
-import {Dialog,DialogContent,DialogHeader,DialogTitle,DialogDescription} from '@/components/ui/dialog';
-import {Sheet,SheetContent,SheetHeader,SheetTitle,SheetDescription} from '@/components/ui/sheet';
-import {Sidebar,SidebarProvider,SidebarContent,SidebarMenu,SidebarMenuItem,SidebarMenuButton} from '@/components/ui/sidebar';
-import {Checkbox} from '@/components/ui/checkbox';
-import {Progress} from '@/components/ui/progress';
-import {Upload,ArrowUpRight,FileText,BookOpen,Sparkles,Plus,ChevronLeft,ChevronRight,Languages,ArrowUp,LoaderCircle,X,Quote,PanelRightOpen,Check,ScanText,Link2,StopCircle,Settings2} from 'lucide-react';
-import Markdown from 'react-markdown';
-import remarkMath from 'remark-math';
-import rehypeKatex from 'rehype-katex';
-import type {PDFDocumentProxy} from 'pdfjs-dist';
-import {extractBlocks,fromText,splitText,groupBySections,type Paper,type Block,type ModelResult} from '@/lib/paper';
-import 'katex/dist/katex.min.css';
-type Message={role:'user'|'assistant';text:string;citations?:ModelResult['citations'];warnings?:string[];scope?:string};
-type APIAction='translate'|'explain'|'ask'|'ocr';
-const mdComponents={a:({children}:{children?:React.ReactNode})=><span>{children}</span>};
-function normalizeMath(text:string){
- // Models use both Markdown dollars and standard LaTeX delimiters. remark-math
- // renders dollars, but would otherwise print \( ... \) and \[ ... \] literally.
- return text.split(/(```[\s\S]*?```)/g).map((part,i)=>i%2?part:part
-  .replace(/\\\[([\s\S]*?)\\\]/g,(_,formula:string)=>`\n\n$$\n${formula.trim()}\n$$\n\n`)
-  .replace(/\\\(([\s\S]*?)\\\)/g,(_,formula:string)=>`$${formula.trim()}$`)).join('');
+"use client";
+import { useState, useRef, useEffect, useCallback } from "react";
+import Link from "next/link";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetDescription,
+} from "@/components/ui/sheet";
+import {
+  Sidebar,
+  SidebarProvider,
+  SidebarContent,
+  SidebarMenu,
+  SidebarMenuItem,
+  SidebarMenuButton,
+} from "@/components/ui/sidebar";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Progress } from "@/components/ui/progress";
+import {
+  Upload,
+  ArrowUpRight,
+  BookOpen,
+  Sparkles,
+  Plus,
+  ChevronLeft,
+  ChevronRight,
+  Languages,
+  ArrowUp,
+  LoaderCircle,
+  X,
+  Quote,
+  PanelRightOpen,
+  Check,
+  ScanText,
+  Link2,
+  StopCircle,
+  Settings2,
+} from "lucide-react";
+import Markdown from "react-markdown";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import type { PDFDocumentProxy } from "pdfjs-dist";
+import {
+  extractBlocks,
+  fromText,
+  groupBySections,
+  replacePhysicalPageOCR,
+  unrecognizedPages,
+  type Paper,
+  type Block,
+  type ModelResult,
+} from "@/lib/paper";
+import "katex/dist/katex.min.css";
+import { RequestManager } from "@/lib/request-manager";
+import {
+  saveReading,
+  loadReading,
+  clearReading,
+  restorablePaper,
+  type ReadingState,
+} from "@/lib/reading-state";
+type Message = {
+  role: "user" | "assistant";
+  text: string;
+  citations?: ModelResult["citations"];
+  warnings?: string[];
+  scope?: string;
+};
+type APIAction =
+  | "translate"
+  | "explain"
+  | "ask"
+  | "ocr"
+  | "summarize"
+  | "highlight";
+const mdComponents = {
+  a: ({ children }: { children?: React.ReactNode }) => <span>{children}</span>,
+};
+function normalizeMath(text: string) {
+  // Models use both Markdown dollars and standard LaTeX delimiters. remark-math
+  // renders dollars, but would otherwise print \( ... \) and \[ ... \] literally.
+  return text
+    .split(/(```[\s\S]*?```)/g)
+    .map((part, i) =>
+      i % 2
+        ? part
+        : part
+            .replace(
+              /\\\[([\s\S]*?)\\\]/g,
+              (_, formula: string) => `\n\n$$\n${formula.trim()}\n$$\n\n`,
+            )
+            .replace(
+              /\\\(([\s\S]*?)\\\)/g,
+              (_, formula: string) => `$${formula.trim()}$`,
+            ),
+    )
+    .join("");
 }
-function RichText({text}:{text:string}){return <div className="rich-text"><Markdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]} components={mdComponents}>{normalizeMath(text)}</Markdown></div>}
-function FormulaImage({block,renderImage}:{block:Block;renderImage:(page:number)=>Promise<string>}){
- const [src,setSrc]=useState('');useEffect(()=>{let valid=true;const crop=block.formulaCrop;if(!crop)return;renderImage(block.page).then(data=>{const img=new Image();img.onload=()=>{if(!valid)return;const canvas=document.createElement('canvas');const x=Math.round(crop.x*img.width),y=Math.round(crop.y*img.height);canvas.width=Math.max(1,Math.min(img.width-x,Math.round(crop.w*img.width)));canvas.height=Math.max(1,Math.min(img.height-y,Math.round(crop.h*img.height)));canvas.getContext('2d')?.drawImage(img,x,y,canvas.width,canvas.height,0,0,canvas.width,canvas.height);if(valid)setSrc(canvas.toDataURL('image/png'));};img.src=data;}).catch(()=>{});return()=>{valid=false;};},[block,renderImage]);
- return src?<figure className="formula-original"><figcaption>原稿公式 · 第 {block.page} 页</figcaption><img src={src} alt={`PDF 原稿第 ${block.page} 页中的公式，保留分式、根号和上下标`}/></figure>:null;
+function RichText({ text }: { text: string }) {
+  return (
+    <div className="rich-text">
+      <Markdown
+        remarkPlugins={[remarkMath]}
+        rehypePlugins={[rehypeKatex]}
+        components={mdComponents}
+      >
+        {normalizeMath(text)}
+      </Markdown>
+    </div>
+  );
 }
-function suspiciousFormula(text:string){return /[\uFFFD\uE000-\uF8FF]/u.test(text)||(/(?:[=∑∫√∂∇∈≤≥≈]|[A-Za-z]\s*[_^]\s*[A-Za-z0-9])/.test(text)&&/[\u0000-\u001f]/.test(text.replace(/\n|\t/g,'')));}
-function formulaDominant(block:Block){return Boolean(block.formulaCrop)&&block.text.length<170&&block.text.split(/\s+/).length<24&&block.text.split('\n').length>=3;}
-export default function PaperReader({account,signInPath,signOutPath}:{account:string|null;signInPath:string;signOutPath:string}){
- const [paper,setPaper]=useState<Paper|null>(null),[page,setPage]=useState(0),[sourcePage,setSourcePage]=useState(1),[mode,setMode]=useState('both');
- const [importOpen,setImportOpen]=useState(false),[connectOpen,setConnectOpen]=useState(false),[mobileOpen,setMobileOpen]=useState(false);
- const [paste,setPaste]=useState(''),[pasteTitle,setPasteTitle]=useState(''),[drag,setDrag]=useState(false),[importing,setImporting]=useState(false),[importProgress,setImportProgress]=useState(0);
- const [provider,setProvider]=useState<'deepseek'|'openai'>('deepseek'),[apiKey,setApiKey]=useState(''),[configured,setConfigured]=useState<boolean|null>(null),[statusError,setStatusError]=useState(''),[error,setError]=useState(''),[status,setStatus]=useState(''),[busy,setBusy]=useState(false);
- const [translations,setTranslations]=useState<Record<string,string>>({}),[pageNotes,setPageNotes]=useState<Record<number,string[]>>({}),[glossary,setGlossary]=useState<{term:string;translation:string}[]>([]);
- const [sectionSummary,setSectionSummary]=useState<{page:number;text:string}|null>(null);
- const [autoTranslate,setAutoTranslate]=useState(false),[autoHighlights,setAutoHighlights]=useState<Record<number,ModelResult['citations']>>({});
- const [selected,setSelected]=useState<string[]>([]),[excerpt,setExcerpt]=useState<{text:string;ids:string[]}|null>(null),[pending,setPending]=useState<{text:string;ids:string[]}|null>(null);
- const [autoTranslation,setAutoTranslation]=useState<{text:string;ids:string[];translation?:string;error?:string;x:number;y:number}|null>(null);
- const autoController=useRef<AbortController|null>(null),autoSerial=useRef(0),autoKey=useRef('');
- const [question,setQuestion]=useState(''),[messages,setMessages]=useState<Message[]>([]),[pageImage,setPageImage]=useState(''),[imageLoading,setImageLoading]=useState(false),[imageError,setImageError]=useState('');
- const [attachment,setAttachment]=useState<{page:number;data:string}|null>(null),[cropMode,setCropMode]=useState(false),[cropStart,setCropStart]=useState<{x:number;y:number}|null>(null),[cropBox,setCropBox]=useState<{x:number;y:number;w:number;h:number}|null>(null);
- const imageFileRef=useRef<HTMLInputElement|null>(null),cropRef=useRef<HTMLDivElement|null>(null);
- const pdfRef=useRef<PDFDocumentProxy|null>(null),urlRef=useRef(''),imageCache=useRef(new Map<number,string>()),abortRef=useRef<AbortController|null>(null),sessionRef=useRef(0),autoTranslateAttempt=useRef(''),fileRef=useRef<HTMLInputElement|null>(null),chatEnd=useRef<HTMLDivElement|null>(null),glossaryRef=useRef(glossary),paperRef=useRef(paper),apiBusyRef=useRef(false);
- glossaryRef.current=glossary;paperRef.current=paper;
- const connected=Boolean(apiKey.trim())||(provider==='openai'&&configured===true);
- const current=paper?.pages[page],sourcePages=current?.sourcePages||[page+1],allBlocks=paper?.pages.flatMap(p=>p.blocks)||[];
- const chosen=excerpt?allBlocks.filter(b=>excerpt.ids.includes(b.id)):allBlocks.filter(b=>selected.includes(b.id));
- const selectedText=excerpt?.text||chosen.map(b=>`[第 ${b.page} 页 · ${b.id}]\n${b.text}`).join('\n\n');
- const completePages=paper?.pages.filter(p=>p.blocks.length>0&&p.blocks.every(b=>translations[b.id])).length||0;
- const checkConnection=useCallback(async()=>{setStatusError('');try{const r=await fetch('/api/status');if(!r.ok)throw new Error();const d=await r.json() as {configured:boolean};setConfigured(d.configured===true);}catch{setConfigured(null);setStatusError('连接状态获取失败，可以重试。');}},[]);
- useEffect(()=>{void checkConnection();return()=>{abortRef.current?.abort();if(urlRef.current)URL.revokeObjectURL(urlRef.current);void pdfRef.current?.loadingTask.destroy();};},[checkConnection]);
- useEffect(()=>{chatEnd.current?.scrollIntoView({behavior:'smooth',block:'nearest'});},[messages,busy]);
- // A section/session key prevents rerendered translation updates from duplicating requests.
- // eslint-disable-next-line react-hooks/exhaustive-deps
- useEffect(()=>{if(!autoTranslate||!paper||!current||busy||!current.blocks.length)return;const key=`${sessionRef.current}:${page}`;if(autoTranslateAttempt.current===key)return;autoTranslateAttempt.current=key;if(current.blocks.some(b=>!translations[b.id]))void translate(false);},[autoTranslate,paper,page,busy,translations]);
- useEffect(()=>{let timer:ReturnType<typeof setTimeout>|undefined;
-  const dismiss=()=>{if(timer)clearTimeout(timer);autoController.current?.abort();autoController.current=null;autoSerial.current++;autoKey.current='';setAutoTranslation(null);};
-  const listener=()=>{if(timer)clearTimeout(timer);const selection=window.getSelection();const text=selection?.toString().trim()||'';const anchor=selection?.anchorNode?.parentElement?.closest('.source-text[data-translation-source]');const focus=selection?.focusNode?.parentElement?.closest('.source-text[data-translation-source]');
-   if(!text||!anchor||!focus||!paper||mode==='pdf'){dismiss();return;}const start=allBlocks.findIndex(b=>b.id===anchor.getAttribute('data-translation-source')),end=allBlocks.findIndex(b=>b.id===focus.getAttribute('data-translation-source'));if(start<0||end<0){dismiss();return;}
-   const blocks=allBlocks.slice(Math.min(start,end),Math.max(start,end)+1);const key=`${paper.title}:${blocks.map(b=>b.id).join(',')}:${text}`;if(key===autoKey.current)return;
-   autoController.current?.abort();autoController.current=null;const serial=++autoSerial.current;autoKey.current=key;const rect=selection!.rangeCount?selection!.getRangeAt(0).getBoundingClientRect():anchor.getBoundingClientRect();const x=Math.min(Math.max(12,rect.right+12),Math.max(12,window.innerWidth-372));const y=Math.min(Math.max(12,rect.top),Math.max(12,window.innerHeight-200));
-   setAutoTranslation({text,ids:blocks.map(b=>b.id),x,y});if(text.length>5500){setAutoTranslation({text,ids:blocks.map(b=>b.id),x,y,error:'选中内容过长，请缩小范围。'});return;}if(!connected)return;
-   timer=setTimeout(async()=>{const controller=new AbortController();autoController.current=controller;try{const block=blocks.at(-1)!;const id=`selection-${serial}`;const result=await request('translate',[{id,text,page:block.page}],'只翻译所选原文，保留术语、公式与数字。','',controller);if(autoSerial.current===serial&&!controller.signal.aborted)setAutoTranslation({text,ids:blocks.map(b=>b.id),x,y,translation:result.translations[0].text});}catch(e){if(autoSerial.current===serial&&!controller.signal.aborted)setAutoTranslation({text,ids:blocks.map(b=>b.id),x,y,error:e instanceof Error?e.message:'翻译失败，请重试。'});}finally{if(autoController.current===controller)autoController.current=null;}},650);
-  };document.addEventListener('selectionchange',listener);window.addEventListener('scroll',dismiss,true);return()=>{document.removeEventListener('selectionchange',listener);window.removeEventListener('scroll',dismiss,true);if(timer)clearTimeout(timer);autoController.current?.abort();};
- },[paper,page,mode,connected,provider,apiKey]);
- const renderImage=useCallback(async(num:number)=>{const cached=imageCache.current.get(num);if(cached)return cached;const doc=pdfRef.current;if(!doc)return '';const pdfPage=await doc.getPage(num);const base=pdfPage.getViewport({scale:1});const viewport=pdfPage.getViewport({scale:Math.min(2,1400/base.width)});const canvas=document.createElement('canvas');canvas.width=Math.round(viewport.width);canvas.height=Math.round(viewport.height);const ctx=canvas.getContext('2d');if(!ctx)throw new Error('浏览器无法显示 PDF 页面。');await pdfPage.render({canvas,canvasContext:ctx,viewport}).promise;const data=canvas.toDataURL('image/jpeg',.86);canvas.width=0;canvas.height=0;if(pdfRef.current===doc){if(imageCache.current.size>3)imageCache.current.delete(imageCache.current.keys().next().value!);imageCache.current.set(num,data);}return data;},[]);
- useEffect(()=>{let valid=true;setPageImage('');setImageError('');if(!paper||paper.kind!=='pdf')return;setImageLoading(true);renderImage(sourcePage).then(data=>{if(valid)setPageImage(data);}).catch(()=>{if(valid)setImageError('原页预览加载失败，可点击“打开原 PDF”核对。');}).finally(()=>{if(valid)setImageLoading(false);});return()=>{valid=false;};},[paper?.url,paper?.title,paper?.kind,sourcePage,renderImage]);
- function reset(next:Paper){sessionRef.current++;autoTranslateAttempt.current='';abortRef.current?.abort();setPaper(next);setPage(0);setSourcePage(next.pages[0]?.sourcePages?.[0]||1);setTranslations({});setPageNotes({});setGlossary([]);setSectionSummary(null);setAutoHighlights({});setAutoTranslate(false);setSelected([]);setExcerpt(null);setPending(null);setAutoTranslation(null);autoController.current?.abort();autoKey.current='';setAttachment(null);setCropMode(false);setMessages([]);setQuestion('');setError('');setStatus('');setMode('both');setImportOpen(false);setMobileOpen(false);}
- async function importPDF(file:File){if(importing||busy)return;setError('');if(!/\.pdf$/i.test(file.name)&&file.type!=='application/pdf'){setError('请选择 PDF 文件，或切换到“粘贴原文”。');return;}if(file.size>20*1024*1024){setError('文件超过 20 MB，请压缩或拆分后导入。');return;}setImporting(true);setImportProgress(0);let doc:PDFDocumentProxy|null=null;try{const buffer=await file.arrayBuffer();const signature=new TextDecoder().decode(buffer.slice(0,1024));if(!signature.includes('%PDF-'))throw new Error('这不是有效的 PDF 文件。');const pdfjs=await import('pdfjs-dist');pdfjs.GlobalWorkerOptions.workerSrc='/pdfjs/pdf.worker.mjs';doc=await pdfjs.getDocument({data:new Uint8Array(buffer),cMapUrl:'/pdfjs/cmaps/',cMapPacked:true,standardFontDataUrl:'/pdfjs/standard_fonts/',wasmUrl:'/pdfjs/wasm/'}).promise;if(doc.numPages>100)throw new Error('当前支持最多 100 页的 PDF，请按章节拆分。');const pages:Paper['pages']=[];for(let i=1;i<=doc.numPages;i++){const p=await doc.getPage(i),content=await p.getTextContent();const items=content.items.filter((x):x is typeof x&{str:string;transform:number[];width:number;height:number}=>'str'in x);const blocks=extractBlocks(items,i,p.getViewport({scale:1}).width,p.getViewport({scale:1}).height);const label=blocks.map(b=>b.text).find(t=>/^(abstract|introduction|conclusion|references|摘要|引言|结论|\d+(\.\d+)*\s+[A-Z])/i.test(t.trim())&&t.length<120);pages.push({number:i,label:label?.split('\n')[0].slice(0,50)||`第 ${i} 页`,blocks,scanned:blocks.reduce((n,b)=>n+b.text.trim().length,0)<30});setImportProgress(Math.round(i/doc.numPages*100));}
- const old=pdfRef.current;pdfRef.current=doc;doc=null;void old?.loadingTask.destroy();imageCache.current.clear();if(urlRef.current)URL.revokeObjectURL(urlRef.current);urlRef.current=URL.createObjectURL(file);reset({title:file.name.replace(/\.pdf$/i,''),pages:groupBySections(pages),url:urlRef.current,kind:'pdf'});
- }catch(e){await doc?.loadingTask.destroy();setError(e instanceof Error?(e.name==='PasswordException'?'此 PDF 已加密，请先解除密码保护再导入。':e.message):'PDF 读取失败，请换一个文件。');}finally{setImporting(false);}}
- function importText(){const text=paste.trim();if(!text){setError('请先粘贴论文内容。');return;}if(text.length>400000){setError('文本超过 40 万字符，请按章节导入。');return;}void pdfRef.current?.loadingTask.destroy();pdfRef.current=null;imageCache.current.clear();if(urlRef.current)URL.revokeObjectURL(urlRef.current);urlRef.current='';reset(fromText(text,pasteTitle));setPaste('');setPasteTitle('');}
- async function example(){setError('');try{const r=await fetch('/attention.pdf');if(!r.ok)throw new Error();await importPDF(new File([await r.blob()],'Attention Is All You Need.pdf',{type:'application/pdf'}));}catch{setError('示例加载失败，请直接上传论文。');}}
- function toggleBlock(id:string,on:boolean){setExcerpt(null);setSelected(old=>on?[...new Set([...old,id])]:old.filter(x=>x!==id));}
- function selectExcerpt(){if(!pending)return;setExcerpt(pending);setSelected([]);setPending(null);window.getSelection()?.removeAllRanges();if(window.innerWidth<931)setMobileOpen(true);}
- function clearSelection(){setSelected([]);setExcerpt(null);setPending(null);}
- function newConversation(){if(apiBusyRef.current)return;setMessages([]);setQuestion('');setSelected([]);setExcerpt(null);setPending(null);setAttachment(null);setGlossary([]);glossaryRef.current=[];setError('');setStatus('');autoController.current?.abort();autoKey.current='';setAutoTranslation(null);window.getSelection()?.removeAllRanges();focusQuestion();}
- function focusQuestion(){if(window.innerWidth<931)setMobileOpen(true);setTimeout(()=>{const fields=[...document.querySelectorAll<HTMLTextAreaElement>('.composer textarea')];fields.find(el=>el.getClientRects().length>0)?.focus();},80);}
- function askFromAutoSelection(){if(!autoTranslation)return;setExcerpt({text:autoTranslation.text,ids:autoTranslation.ids});setSelected([]);autoController.current?.abort();autoKey.current='';setAutoTranslation(null);window.getSelection()?.removeAllRanges();focusQuestion();}
- async function translateChecked(){if(!selected.length||apiBusyRef.current||!paper||!requireConnection())return;const blocks=allBlocks.filter(b=>selected.includes(b.id)&&!translations[b.id]);if(!blocks.length){setMode('both');return;}if(blocks.reduce((n,b)=>n+b.text.length,0)>5500){setError('勾选内容过长，请减少段落后再翻译。');return;}const c=begin();setStatus('正在翻译勾选段落…');try{const result=await request('translate',blocks,'忠实翻译所选段落。','',c);mergeResult(result,page+1);setMode('both');setStatus('勾选段落已翻译。');}catch(e){handleError(e);}finally{finish();}}
- function goTo(index:number,id?:string){setPage(index);setSourcePage(paper?.pages[index]?.sourcePages?.[0]||index+1);setPending(null);setMobileOpen(false);window.scrollTo({top:0,behavior:'smooth'});if(id)setTimeout(()=>document.getElementById(id)?.scrollIntoView({behavior:'smooth',block:'center'}),160);}
- function requireConnection(){if(!connected){setConnectOpen(true);return false;}return true;}
- async function attachFile(file:File){if(!file.type.startsWith('image/')){setError('请选择图片文件。');return;}if(file.size>8*1024*1024){setError('图片不能超过 8 MB。');return;}try{const bitmap=await createImageBitmap(file);const scale=Math.min(1,1600/Math.max(bitmap.width,bitmap.height));const canvas=document.createElement('canvas');canvas.width=Math.round(bitmap.width*scale);canvas.height=Math.round(bitmap.height*scale);canvas.getContext('2d')?.drawImage(bitmap,0,0,canvas.width,canvas.height);bitmap.close();setAttachment({page:sourcePage,data:canvas.toDataURL('image/jpeg',.85)});setError('');}catch{setError('图片无法读取，请换一张截图。');}}
- function cropPoint(e:React.PointerEvent<HTMLDivElement>){const rect=cropRef.current!.getBoundingClientRect();return {x:Math.max(0,Math.min(1,(e.clientX-rect.left)/rect.width)),y:Math.max(0,Math.min(1,(e.clientY-rect.top)/rect.height))};}
- function cropEnd(){if(!cropBox||!pageImage)return;const img=new Image();img.onload=()=>{const c=document.createElement('canvas');c.width=Math.max(1,Math.round(cropBox.w*img.width));c.height=Math.max(1,Math.round(cropBox.h*img.height));c.getContext('2d')?.drawImage(img,cropBox.x*img.width,cropBox.y*img.height,c.width,c.height);setAttachment({page:sourcePage,data:c.toDataURL('image/jpeg',.88)});setCropMode(false);setCropBox(null);setCropStart(null);setMobileOpen(true);};img.src=pageImage;}
- async function request(action:APIAction,blocks:Block[],q:string,selection:string,controller:AbortController,history:Message[]=[]):Promise<ModelResult>{const thisPaper=paperRef.current;if(!thisPaper)throw new Error('请先导入论文。');const nums=[...new Set(blocks.map(b=>b.page))];if(action==='ocr'&&!nums.length)nums.push(sourcePage);const images:{page:number;data:string}[]=[];if(attachment&&action!=='translate'&&action!=='ocr')images.push(attachment);if(thisPaper.kind==='pdf'&&(!attachment||action==='translate'||action==='ocr')){for(const n of nums.slice(0,3)){const data=await renderImage(n);if(data)images.push({page:n,data});}}if(controller.signal.aborted)throw new DOMException('Cancelled','AbortError');const res=await fetch('/api/assist',{method:'POST',headers:{'Content-Type':'application/json','X-AI-Provider':provider,...(apiKey.trim()?{'X-AI-API-Key':apiKey.trim()}:{})},signal:controller.signal,body:JSON.stringify({action,blocks,question:q,selected:selection,images,title:thisPaper.title,glossary:glossaryRef.current,history:history.slice(-8).map(m=>({role:m.role,text:m.text.slice(0,16000)}))})});const data=await res.json() as ModelResult & {error?:string};if(!res.ok){if(res.status===503&&!apiKey.trim())setConfigured(false);throw new Error(data.error||'请求失败，请重试。');}return data;}
- function begin(){apiBusyRef.current=true;setBusy(true);setError('');const c=new AbortController();abortRef.current=c;return c;}
- function finish(){apiBusyRef.current=false;setBusy(false);abortRef.current=null;}
- function handleError(e:unknown){if(e instanceof Error&&e.name==='AbortError'){setStatus('已停止。已完成的内容仍保留。');return;}setError(e instanceof Error?e.message:'处理失败，请稍后重试。');setStatus('');}
- function mergeResult(result:ModelResult,num:number){setTranslations(old=>({...old,...Object.fromEntries(result.translations.map(t=>[t.id,t.text]))}));setPageNotes(old=>({...old,[num]:[...new Set([...(old[num]||[]),...result.warnings])]}));if(result.glossary.length){const map=new Map(glossaryRef.current.map(g=>[g.term.toLowerCase(),g]));for(const g of result.glossary)if(!map.has(g.term.toLowerCase()))map.set(g.term.toLowerCase(),g);const next=[...map.values()].slice(0,80);glossaryRef.current=next;setGlossary(next);}}
- async function translate(all=false){if(apiBusyRef.current||!paper||!current||!requireConnection())return;const c=begin();try{const targets=all?paper.pages:[current];for(const p of targets){if(c.signal.aborted)break;if(!p.blocks.length)throw new Error(`「${p.label}」没有足够可选文字。请先识别对应原页。`);const remaining=p.blocks.filter(b=>!translations[b.id]);let batch:Block[]=[];let count=0;const batches:Block[][]=[];for(const b of remaining){if((count+b.text.length>5500||batch.length>=90)&&batch.length){batches.push(batch);batch=[];count=0;}batch.push(b);count+=b.text.length;}if(batch.length)batches.push(batch);for(let i=0;i<batches.length;i++){setStatus(`正在翻译第 ${p.number} / ${paper.pages.length} 节 · ${i+1}/${batches.length} 批`);const result=await request('translate',batches[i],'忠实、完整地逐段翻译为简体中文。','',c);mergeResult(result,p.number);} }setStatus(c.signal.aborted?'已停止，已完成译文保留。':all?'全文翻译完成。请对照原文核对公式、数值与注释。':'本页翻译完成。');}catch(e){handleError(e);}finally{finish();}}
- async function ocr(){if(apiBusyRef.current||!current||!requireConnection())return;const c=begin();setStatus('正在识别本页文字…');try{const result=await request('ocr',[],'按原始阅读顺序识别当前页全部文字。','',c);const blocks=result.transcript.flatMap(splitText).filter(t=>t.trim()).map((text,i)=>({id:`p${sourcePage}-ocr${i+1}`,text,page:sourcePage}));setPaper(old=>old?{...old,pages:old.pages.map((p,i)=>i===page?{...p,blocks:[...p.blocks.filter(b=>b.page!==sourcePage),...blocks].sort((a,b)=>a.page-b.page),scanned:false}:p)}:old);setPageNotes(old=>({...old,[page+1]:['本页为 AI 文字识别结果，请与原页核对后翻译。',...result.warnings]}));setStatus('文字识别完成，请核对原页。');}catch(e){handleError(e);}finally{finish();}}
- async function ask(kind:'ask'|'explain',preset?:string){if(apiBusyRef.current||!paper||!current)return;const q=preset||question.trim();if(kind==='ask'&&!q&&!attachment)return;if(!requireConnection())return;const scopePages=[...new Set([...sourcePages,...chosen.map(b=>b.page),...(attachment?[attachment.page]:[])])].sort((a,b)=>a-b);const blocks=attachment?[...chosen]:[...new Map([...current.blocks,...chosen].map(b=>[b.id,b])).values()];if(!blocks.length&&!attachment){setError('当前页没有可引用的文字，请先识别本页文字或上传截图。');return;}if(blocks.reduce((n,b)=>n+b.text.length,0)>48000||selectedText.length>16000){setError('引用内容过多，请减少勾选段落后再试。');return;}const c=begin();const prompt=q|| (attachment?'请解释截图中的公式，逐一说明符号、维度与推导；辨认不清处请明确指出。':'请讲解这一节的核心内容、关键术语与必要的数学细节。');setMessages(old=>[...old,{role:'user',text:prompt,scope:`依据第 ${scopePages.join('、')} 页${attachment?' · 附公式截图':''}${selectedText?'与所选片段':''}`}]);setQuestion('');setStatus('正在结合原文回答…');try{const result=await request(kind,blocks,prompt,selectedText,c,messages);setMessages(old=>[...old,{role:'assistant',text:result.answer,citations:result.citations,warnings:result.warnings,scope:`依据「${current.label}」及第 ${scopePages.join('、')} 页选段`}]);setAttachment(null);setStatus('');}catch(e){handleError(e);setQuestion(prompt);}finally{finish();}}
- async function summarizeSection(){if(apiBusyRef.current||!paper||!current||!current.blocks.length||!requireConnection())return;if(current.blocks.reduce((n,b)=>n+b.text.length,0)>48000){setError('本节内容过长，暂时无法生成摘要。');return;}const pageIndex=page;const c=begin();setStatus('正在提炼本节要点…');try{const result=await request('explain',current.blocks,'请只依据给定原文，生成恰好三条简体中文摘要，每条一句：1. 本节要解决的问题；2. 核心方法或论证；3. 主要结论及原文明确提到的限制。不要补充原文没有的信息，不要写开场白。','',c);if(!c.signal.aborted)setSectionSummary({page:pageIndex,text:result.answer});mergeResult(result,pageIndex+1);setStatus('摘要已生成。');}catch(e){handleError(e);}finally{finish();}}
- async function highlightSection(){if(apiBusyRef.current||!paper||!current||!current.blocks.length||!requireConnection())return;if(current.blocks.reduce((n,b)=>n+b.text.length,0)>48000){setError('本节内容过长，暂时无法分析重点。');return;}const pageIndex=page;const c=begin();setStatus('正在标记本节重点…');try{const result=await request('explain',current.blocks,'阅读本节并找出最多 5 个最值得关注的原文段落，优先覆盖：研究新意/问题、关键方法或论证、主要结果/限制。answer 用简短中文说明每个重点及其类别；citations 仅填写对应 blocks 的 id 和逐字原文短句。只引用确实承载重点的段落，不够明确的类别不要推断。','',c);if(!c.signal.aborted)setAutoHighlights(old=>({...old,[pageIndex]:result.citations}));mergeResult(result,pageIndex+1);setStatus(result.citations.length?'本节重点已标记，可点击原文引用查看。':'本节没有找到足够明确的重点段落。');}catch(e){handleError(e);}finally{finish();}}
- function toggleAutoTranslate(){if(autoTranslate){setAutoTranslate(false);return;}if(!requireConnection())return;autoTranslateAttempt.current='';setAutoTranslate(true);}
- function stop(){abortRef.current?.abort();}
- function showPanel(){setMobileOpen(true);}
- useEffect(()=>{const ctx=(document as unknown as {modelContext?:{registerTool:(tool:unknown,opts:{signal:AbortSignal})=>Promise<void>}}).modelContext;if(!ctx?.registerTool)return;const ac=new AbortController();const tools=[{name:'read_paper_context',description:'读取已导入论文的可见页和段落编号，不调用 AI。',inputSchema:{type:'object',properties:{},additionalProperties:false},annotations:{readOnlyHint:true,untrustedContentHint:true},execute:()=>({title:paper?.title||null,page:page+1,totalPages:paper?.pages.length||0,blocks:current?.blocks||[],selected})},{name:'select_paper_passages',description:'用段落编号勾选论文内容供后续提问。不会发送 AI 请求。',inputSchema:{type:'object',properties:{ids:{type:'array',items:{type:'string'}}},required:['ids'],additionalProperties:false},annotations:{readOnlyHint:false,untrustedContentHint:false},execute:(input:unknown)=>{const ids=(input as {ids?:unknown})?.ids;if(!Array.isArray(ids)||!ids.every(id=>typeof id==='string'&&allBlocks.some(b=>b.id===id)))throw new Error('段落编号不存在');setExcerpt(null);setSelected([...new Set(ids)]);return {selected:[...new Set(ids)]};}}];for(const t of tools){try{void Promise.resolve(ctx.registerTool(t,{signal:ac.signal})).catch(()=>{});}catch{}}return()=>ac.abort();},[paper,page,selected]);
- const importForm=<Tabs defaultValue="file" className="import-tabs"><TabsList><TabsTrigger value="file">上传 PDF</TabsTrigger><TabsTrigger value="text">粘贴原文</TabsTrigger></TabsList><TabsContent value="file"><div className={`dropzone ${drag?'dragging':''} ${importing?'loading':''}`} onDragOver={e=>{e.preventDefault();setDrag(true);}} onDragLeave={()=>setDrag(false)} onDrop={e=>{e.preventDefault();setDrag(false);const file=e.dataTransfer.files[0];if(file)void importPDF(file);}}>{importing?<LoaderCircle className="spin"/>:<Upload/>}<h2>{importing?'正在读取论文…':'放入你想读的论文'}</h2><p>{importing?`${importProgress}% · 逐页提取原文`:'拖拽 PDF 到这里，或点击选择文件'}</p><span className="file-limit">PDF · 最多 20 MB / 100 页</span><input ref={fileRef} disabled={importing||busy} type="file" accept="application/pdf,.pdf" aria-label="选择论文 PDF" onChange={e=>{const f=e.target.files?.[0];if(f)void importPDF(f);e.target.value='';}}/></div>{importing&&<Progress value={importProgress} aria-label="论文读取进度" className="mt-4 h-1"/>}<div className="sample-line"><span>手边没有论文？</span><button disabled={importing||busy} onClick={()=>void example()}>试读 Attention Is All You Need <ArrowUpRight size={14}/></button></div></TabsContent><TabsContent value="text"><label className="field-label" htmlFor="paper-title">论文标题（可选）</label><input id="paper-title" className="text-input" value={pasteTitle} maxLength={500} onChange={e=>setPasteTitle(e.target.value)} placeholder="为这次阅读起个名字"/><label className="field-label" htmlFor="paper-text">论文原文</label><textarea id="paper-text" rows={7} value={paste} onChange={e=>setPaste(e.target.value)} placeholder="粘贴摘要、章节或全文，用空行分隔段落。支持中英文，最多 40 万字符。"/><button className="primary import-button" disabled={!paste.trim()||busy||importing} onClick={importText}>开始阅读 <ArrowUpRight size={16}/></button></TabsContent></Tabs>;
- const panel=<><div className="panel-title"><Sparkles size={19}/><b>一起读懂</b>{paper&&<button type="button" className="new-conversation" disabled={busy} onClick={newConversation} title="清除旧问答、引用和截图，从当前章节重新提问"><Plus size={15}/>新对话</button>}</div>{!paper?<div className="assistant-empty"><span className="spark-circle"><Sparkles size={28}/></span><h3>你的问题，值得展开。</h3><p>导入论文后，勾选段落或划选文字，<br/>在这里翻译、解释或继续追问。</p><span className="example-question">“这段结论需要哪些前提？” <ArrowUpRight size={15}/></span></div>:<><div className="panel-top">{error&&<div className="panel-error" role="alert">{error}</div>}
- <details className="insight-section highlight-section" open={(autoHighlights[page]?.length||0)>0}><summary><span>AI 重点标记</span><span className="insight-count">{autoHighlights[page]?.length?`${autoHighlights[page].length} 处`:'当前章节'}</span></summary>{autoHighlights[page]?.length?<div className="highlight-list">{autoHighlights[page].map((item,i)=><button type="button" key={`${item.id}-${i}`} onClick={()=>goTo(page,item.id)}><span>{item.quote}</span><small>{item.id} · 点击定位</small></button>)}</div>:<p className="insight-empty">标记本节的新意、方法与结果段落。</p>}</details>
- <details className="insight-section glossary-section" open><summary><span>关键词词典</span><span className="insight-count">{glossary.length||'等待翻译提取'}</span></summary>{glossary.length?<div className="glossary-list">{glossary.slice(0,18).map(item=><button type="button" key={item.term} title={`${item.term}：${item.translation}`} onClick={()=>{setQuestion(`请结合本节解释“${item.term}”（${item.translation}）的含义。`);focusQuestion();}}><span>{item.term}</span><b>{item.translation}</b></button>)}{glossary.length>18&&<span className="glossary-more">另有 {glossary.length-18} 个术语</span>}</div>:<p className="insight-empty">翻译论文时会自动整理关键术语。</p>}</details>
- <section className="insight-section summary-section"><div className="insight-heading"><span>三行摘要</span><button type="button" className="summary-action" disabled={busy||!current?.blocks.length} onClick={()=>void summarizeSection()}>{busy&&status.includes('提炼')?<LoaderCircle size={13} className="spin"/>:<Sparkles size={13}/>} {sectionSummary?.page===page?'重新生成':'生成本节摘要'}</button></div>{sectionSummary?.page===page?<div className="section-summary"><RichText text={sectionSummary.text}/></div>:<p className="insight-empty">按“问题、方法、结论”提炼当前章节。</p>}</section>
- <div className="selection-card"><div className="selection-header"><span><Quote size={13}/> {selectedText?`已引用 ${chosen.length} 段`:'引用原文'}</span>{selectedText&&<button aria-label="清除引用" onClick={clearSelection}><X size={14}/></button>}</div><p>{selectedText||'勾选段落左侧的方框，或直接划选你想问的文字。'}</p>{selectedText&&<><small>第 {[...new Set(chosen.map(b=>b.page))].join('、')} 页 · 保留原文上下文</small><button type="button" className="ask-selected" disabled={busy} onClick={focusQuestion}>根据所选内容提问 <ArrowUpRight size={14}/></button></>}</div><div className="quick-actions"><button disabled={busy} onClick={()=>void ask('explain','请先用一句话说清这部分在解决什么问题，再按‘直觉—具体例子—原文逻辑—适用前提’讲清楚。先解释必需的术语，避免空泛总结；有选段或截图时只聚焦它。')}><Sparkles size={14}/>通俗讲解</button><button disabled={busy} onClick={()=>void ask('ask','请聚焦我选中的公式或截图。先准确抄写能辨认的公式；逐项解释符号、下标、维度与单位；逐行说明从上一式到下一式做了什么、用了哪个假设；最后代入一个简单数值例子并指出常见误解。看不清的符号不要猜。')}><span className="math-icon">ƒ</span>公式拆解</button></div></div><div className="chat-messages" aria-live="polite">{messages.length===0?<div className="chat-hint"><BookOpen size={20}/><h3>从一个具体问题开始</h3><p>例如：这个假设为什么成立？<br/>这一步推导省略了什么？</p><small>新对话只依据当前章节和新选的段落。</small></div>:messages.map((m,i)=><div className={`message ${m.role}`} key={i}><div className="message-meta">{m.role==='user'?'你':'论文助手'}<span>{m.role==='assistant'?'AI 生成':''}</span></div><RichText text={m.text}/>{m.citations?.length? <div className="citations">{m.citations.map((c,j)=><button key={j} title={c.quote} onClick={()=>{const b=allBlocks.find(b=>b.id===c.id);if(b)goTo(paper.pages.findIndex(p=>p.blocks.some(x=>x.id===b.id)),b.id);}}><Link2 size={12}/>{c.id}</button>)}</div>:null}{m.warnings?.map((w,j)=><p className="small-warning" key={j}>{w}</p>)}{m.scope&&<p className="scope-text">{m.scope}</p>}</div>)}{busy&&<div className="thinking"><LoaderCircle size={15} className="spin"/>{status||'正在处理…'}</div>}<div ref={chatEnd}/></div><div className="composer"><div className="image-attach"><input ref={imageFileRef} type="file" accept="image/*" hidden onChange={e=>{const file=e.target.files?.[0];if(file)void attachFile(file);e.target.value='';}}/><button type="button" disabled={busy} onClick={()=>imageFileRef.current?.click()}>上传原文截图</button>{paper?.kind==='pdf'&&<button type="button" disabled={busy||!pageImage} onClick={()=>{setMode('pdf');setCropMode(true);setMobileOpen(false);}}>框选当前原页</button>}{attachment&&<div className="attached-image"><img src={attachment.data} alt="待提问的公式截图"/><button type="button" onClick={()=>setAttachment(null)} aria-label="移除截图"><X size={14}/></button><span>原第 {attachment.page} 页 · 已附图</span></div>}</div><label className="sr-only" htmlFor="question">向论文提问</label><textarea id="question" value={question} onChange={e=>setQuestion(e.target.value)} placeholder="带着原文，问一个问题…" maxLength={5000} rows={3} onKeyDown={e=>{if((e.ctrlKey||e.metaKey)&&e.key==='Enter'){e.preventDefault();void ask('ask');}}}/><div className="composer-bottom"><span>Ctrl / ⌘ + Enter</span>{busy?<button className="send stop" onClick={stop} aria-label="停止生成"><StopCircle size={18}/></button>:<button className="send" disabled={!question.trim()&&!attachment} onClick={()=>void ask('ask')} aria-label="发送问题"><ArrowUp size={19}/></button>}</div><p>AI 回答可能有误，请通过引用核对原文。</p></div></>}{!connected&&<button className="connection-banner" onClick={()=>setConnectOpen(true)}><Settings2 size={14}/>{statusError||'AI 服务待连接'}<ArrowUpRight size={13}/></button>}</>;
- return <><header className="topbar"><a className="brand" href="/" aria-label="Paper Room 首页"><span className="logo">P</span>Paper Room<span className="slash">/</span><b>论文阅读室</b></a><span className="header-note">READ · UNDERSTAND · QUESTION</span><div className="header-actions"><button className={`connection-status ${connected?'ready':''}`} onClick={()=>setConnectOpen(true)}>{connected?<Check size={14}/>:<Settings2 size={14}/>}<span>{connected?'AI 已配置':'连接 AI'}</span></button>{account?<a className="account-link" href={signOutPath} target="_top" title={account}>退出登录</a>:<a className="account-link" href={signInPath} target="_top">登录 ChatGPT</a>}{paper&&<button className="new-paper" disabled={busy||importing} onClick={()=>{setError('');setImportOpen(true);}}><Plus size={16}/><span>导入论文</span></button>}</div></header><SidebarProvider className="site-sidebar-provider"><div className="workspace"><Sidebar collapsible="none" className="paper-nav"><div className="nav-heading">{paper?'论文章节':'阅读目录'}<span>{paper?`${paper.pages.length} 节`:'CONTENTS'}</span></div><SidebarContent>{paper?<SidebarMenu className="page-menu">{paper.pages.map((p,i)=><SidebarMenuItem key={p.number}><SidebarMenuButton isActive={i===page} onClick={()=>goTo(i)} className="page-menu-button"><span className="page-number">{String(p.number).padStart(2,'0')}</span><span className="page-label">{p.label}</span>{p.blocks.length>0&&p.blocks.every(b=>translations[b.id])&&<Check size={13}/>}</SidebarMenuButton></SidebarMenuItem>)}</SidebarMenu>:<div className="nav-empty"><BookOpen size={22}/><p>导入论文后，<br/>从这里开始阅读。</p></div>}</SidebarContent><div className="nav-bottom">{paper?<><div className="progress-label"><span>已翻译</span><b>{completePages} / {paper.pages.length} 节</b></div><Progress value={completePages/paper.pages.length*100} className="h-1" aria-label="全文翻译进度"/></>:<span>让每一次阅读<br/>都有更深一层的理解。</span>}</div></Sidebar><main className={`reader-main ${paper?'has-paper':''}`}>
- {error&&<div className="error-banner" role="alert"><span>{error}</span><button onClick={()=>setError('')} aria-label="关闭错误提示"><X size={16}/></button></div>}
- {!paper?<><div className="eyebrow">YOUR NEXT PAPER</div><h1>把论文读懂，<br/><em>从这里开始。</em></h1><p className="intro">原文在左，理解在旁。带着问题读每一段。</p>{importForm}<p className="privacy-note">文件在浏览器中读取。使用 AI 时，相关文本和页面图像会发送至所选模型服务商；本次阅读保留在当前页面，刷新后需重新导入。</p><div className="capabilities"><div><Languages/><b>对照翻译</b><p>逐段对应，核对术语与公式。</p></div><div><BookOpen/><b>内容讲解</b><p>从核心观点走到推导细节。</p></div><div><Quote/><b>选段提问</b><p>引用原文，让问题更具体。</p></div></div></>:<><div className="document-eyebrow"><span>{paper.kind==='pdf'?'PDF PAPER':'TEXT PAPER'}</span><span>{paper.pages.length} {paper.kind==='pdf'?'节':'个片段'}</span></div><h1 className="document-title">{paper.title}</h1><div className="document-actions"><div>{paper.url&&<a href={paper.url} target="_blank" rel="noopener">打开原 PDF <ArrowUpRight size={14}/></a>}<span>第 {page+1} / {paper.pages.length} 节</span></div><div className="page-controls"><button disabled={page===0} onClick={()=>goTo(page-1)} aria-label="上一节"><ChevronLeft size={18}/></button><button disabled={page===paper.pages.length-1} onClick={()=>goTo(page+1)} aria-label="下一节"><ChevronRight size={18}/></button></div></div>
- <div className="reading-toolbar"><Tabs value={mode} onValueChange={setMode}><TabsList><TabsTrigger value="both">中英对照</TabsTrigger><TabsTrigger value="original">原文</TabsTrigger>{paper.kind==='pdf'&&<TabsTrigger value="pdf">原页</TabsTrigger>}</TabsList></Tabs><div className="reader-tools"><button type="button" className={`reader-tool-button ${autoTranslate?'enabled':''}`} aria-pressed={autoTranslate} onClick={toggleAutoTranslate}><Languages size={14}/>{autoTranslate?'连续翻译已开启':'连续翻译'}</button><button type="button" className="reader-tool-button" disabled={busy||!current?.blocks.length} onClick={()=>void highlightSection()}><Sparkles size={14}/>AI重点</button><button className="explain-page" disabled={busy} onClick={()=>{void ask('explain');if(window.innerWidth<931)showPanel();}}><Sparkles size={15}/>讲解本节</button></div></div>
- <div className="translation-actions">{selected.length>0&&<button className="secondary" disabled={busy} onClick={()=>void translateChecked()}><Languages size={15}/>翻译勾选段落</button>}<button className="primary" disabled={busy||current?.scanned} onClick={()=>void translate()}><Languages size={15}/>翻译本节</button><button className="secondary" disabled={busy||completePages===paper.pages.length} onClick={()=>void translate(true)}>翻译全文</button>{busy&&<button className="text-button" onClick={stop}><StopCircle size={14}/>停止</button>}<span>{connected?'保留公式、数字和不确定性':'连接 AI 后可翻译与提问'}</span></div>
- {status&&<div className="work-status" role="status">{busy&&<LoaderCircle size={14} className="spin"/>}{status}</div>}
- {paper.kind==='pdf'&&!current?.blocks.some(b=>b.page===sourcePage)&&<div className="scan-notice"><ScanText size={22}/><div><b>原第 {sourcePage} 页没有足够的可选文字</b><p>可查看原页，或使用 AI 识别这一页的文字。</p><button disabled={busy} onClick={()=>void ocr()}>识别本页文字 <ArrowUpRight size={14}/></button></div></div>}
- {paper.kind==='pdf'&&mode!=='pdf'&&<details className="inline-pdf" open><summary>原页图表与公式 · 第 {sourcePage} 页 <span>点击折叠 / 展开</span></summary><div className="inline-pdf-content">{sourcePages.length>1&&<div className="source-pages"><span>原页：</span>{sourcePages.map(n=><button key={n} className={n===sourcePage?'active':''} onClick={()=>setSourcePage(n)}>{n}</button>)}</div>}{imageLoading?<div className="loading-state"><LoaderCircle className="spin"/>正在显示图表…</div>:pageImage?<><button type="button" onClick={()=>setMode('pdf')} title="切换到原页视图"><img src={pageImage} alt={`论文第 ${sourcePage} 页原版，包括图表、公式和排版`}/></button><p>点击图像切换到原页视图；需要更大画面可用“打开原 PDF”。</p></>:<>{paper.url?<iframe title={`论文第 ${sourcePage} 页原版`} src={`${paper.url}#page=${sourcePage}`} />:<p>{imageError||'原页暂不可用。'}</p>}</>}</div></details>}
- {mode==='pdf'?<div className="pdf-preview">{cropMode&&<p className="crop-help">拖动框选公式或图表，松开后点“使用截图”。 <button onClick={()=>{setCropMode(false);setCropBox(null);}}>取消</button></p>}{imageLoading?<div className="loading-state"><LoaderCircle className="spin"/>正在显示原页…</div>:pageImage?<div ref={cropRef} className={`crop-surface ${cropMode?'cropping':''}`} onPointerDown={e=>{if(!cropMode)return;e.currentTarget.setPointerCapture(e.pointerId);const p=cropPoint(e);setCropStart(p);setCropBox({x:p.x,y:p.y,w:0,h:0});}} onPointerMove={e=>{if(!cropMode||!cropStart)return;const p=cropPoint(e);setCropBox({x:Math.min(p.x,cropStart.x),y:Math.min(p.y,cropStart.y),w:Math.abs(p.x-cropStart.x),h:Math.abs(p.y-cropStart.y)});}} onPointerUp={()=>setCropStart(null)}><img draggable={false} src={pageImage} alt={`原论文第 ${sourcePage} 页`}/>{cropBox&&<div className="crop-selection" style={{left:`${cropBox.x*100}%`,top:`${cropBox.y*100}%`,width:`${cropBox.w*100}%`,height:`${cropBox.h*100}%`}}/>}</div>:<p>{imageError||'此页预览不可用。'}</p>}{cropMode&&cropBox&&cropBox.w>.015&&cropBox.h>.015&&<button className="primary" onClick={cropEnd}>使用截图提问</button>}</div>:<div className="paragraphs">{current?.blocks.map((b,i)=>{const highlighted=autoHighlights[page]?.some(c=>c.id===b.id)===true;return <section className={`paper-block ${selected.includes(b.id)||excerpt?.ids.includes(b.id)?'selected':''} ${highlighted?'ai-highlighted':''}`} id={b.id} data-paper-block={b.id} key={b.id}><div className="block-header"><Checkbox checked={selected.includes(b.id)} onCheckedChange={on=>toggleBlock(b.id,on===true)} aria-label={`引用第 ${b.page} 页第 ${i+1} 段`}/><span>原文 <span className="block-num">{String(i+1).padStart(2,'0')}</span></span>{highlighted&&<span className="highlight-flag"><Sparkles size={11}/>AI重点</span>}<span className="block-source">p. {b.page} · {b.id}</span></div>{formulaDominant(b)?<><FormulaImage block={b} renderImage={renderImage}/><details className="formula-extracted"><summary>查看 PDF 提取文字</summary><div className="source-text" data-translation-source={b.id}>{b.text}</div></details></>:<><div className="source-text" data-translation-source={b.id}>{b.text}</div>{b.formulaCrop&&<details className="formula-reference"><summary>核对原稿公式</summary><FormulaImage block={b} renderImage={renderImage}/></details>}</>}{paper.kind==='pdf'&&suspiciousFormula(b.text)&&!b.formulaCrop&&<div className="formula-warning">这段可能含有 PDF 编码异常的公式。<button onClick={()=>{setSourcePage(b.page);setMode('pdf');}}>查看原页公式</button></div>}{mode==='both'&&<div className={`translation ${translations[b.id]?'filled':''}`}><div className="translation-label"><span>译</span>{translations[b.id]?'中文译文':'等待翻译'}</div>{translations[b.id]?<RichText text={translations[b.id]}/>:<p>点击“翻译本节”，在这里对照阅读中文译文。</p>}</div>}</section>})}</div>}
- {(pageNotes[page+1]||[]).length>0&&<div className="translation-notes"><b>需要核对</b>{pageNotes[page+1].map((n,i)=><p key={i}>{n}</p>)}</div>}
- {paper.kind==='pdf'&&sourcePages.length>1&&<div className="source-pages"><span>本节原页：</span>{sourcePages.map(n=><button key={n} className={n===sourcePage?'active':''} onClick={()=>setSourcePage(n)}>{n}</button>)}</div>}<div className="bottom-pagination"><button disabled={page===0} onClick={()=>goTo(page-1)}><ChevronLeft size={15}/>上一节</button><span>{page+1} / {paper.pages.length} 节</span><button disabled={page===paper.pages.length-1} onClick={()=>goTo(page+1)}>下一节<ChevronRight size={15}/></button></div><p className="reading-footnote">PDF 文字可能有分栏或公式识别误差，请切换“原页”核对。AI 译文与讲解不替代原文。</p></>}
- </main><aside className="assistant-panel">{panel}</aside></div></SidebarProvider>
- <Dialog open={importOpen} onOpenChange={setImportOpen}><DialogContent className="import-dialog"><DialogHeader><DialogTitle>导入一篇新论文</DialogTitle><DialogDescription>新论文会替换当前阅读内容与问答记录。</DialogDescription></DialogHeader>{error&&<p className="dialog-error">{error}</p>}{importForm}</DialogContent></Dialog>
- <Dialog open={connectOpen} onOpenChange={setConnectOpen}><DialogContent><DialogHeader><DialogTitle>连接论文助手</DialogTitle><DialogDescription>选择服务商并填入对应的 API Key，即可使用翻译、讲解和选段提问。</DialogDescription></DialogHeader><div className="connection-detail"><label className="field-label" htmlFor="ai-provider">模型服务</label><select id="ai-provider" className="text-input" value={provider} onChange={e=>{setProvider(e.target.value as 'deepseek'|'openai');setApiKey('');}}><option value="deepseek">DeepSeek（deepseek-flash）</option><option value="openai">OpenAI</option></select><label className="field-label" htmlFor="openai-key">{provider==='deepseek'?'DeepSeek':'OpenAI'} API Key</label><input id="openai-key" className="text-input" type="password" autoComplete="off" spellCheck={false} value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="sk-…"/><p className="privacy-note">仅保留在当前页面内存中，刷新即清除。发起请求时，密钥由本站服务用于向所选模型服务发起请求；请只在你信任的设备上输入。调用可能产生所选服务商的 API 费用。</p>{provider==='openai'&&configured&&<p>站点也已配置 OpenAI 模型服务；留空可使用站点配置。</p>}{statusError&&<p role="alert">{statusError}</p>}<div className="key-actions"><button className="secondary" onClick={()=>setApiKey('')} disabled={!apiKey}>清除密钥</button><button className="primary" onClick={()=>setConnectOpen(false)} disabled={!connected}>完成</button></div></div></DialogContent></Dialog>
- <Sheet open={mobileOpen} onOpenChange={setMobileOpen}><SheetContent side="right" className="mobile-assistant"><SheetHeader className="sr-only"><SheetTitle>论文助手</SheetTitle><SheetDescription>查看引用原文并提问。</SheetDescription></SheetHeader>{panel}</SheetContent></Sheet>
- {paper&&<button className="mobile-question" onClick={showPanel}><PanelRightOpen size={17}/>选段提问{chosen.length>0&&<span>{chosen.length}</span>}</button>}
- {autoTranslation&&<aside className="selection-translation-card" style={{left:autoTranslation.x,top:autoTranslation.y}} onPointerDown={e=>e.stopPropagation()} role="status"><div className="selection-translation-heading"><Languages size={15}/>选中内容 · 中文译文<button type="button" onPointerDown={e=>e.preventDefault()} onClick={()=>{autoController.current?.abort();autoKey.current='';setAutoTranslation(null);window.getSelection()?.removeAllRanges();}} aria-label="关闭选中译文"><X size={15}/></button></div>{autoTranslation.error?<p className="selection-translation-error">{autoTranslation.error}</p>:autoTranslation.translation?<RichText text={autoTranslation.translation}/>:connected?<p>正在翻译…</p>:<p>连接 AI 后，划选原文即可自动翻译。<button type="button" onPointerDown={e=>e.preventDefault()} onClick={()=>setConnectOpen(true)}>连接 AI</button></p>}<button type="button" className="ask-selection-from-card" onPointerDown={e=>e.preventDefault()} onClick={askFromAutoSelection}><Quote size={14}/>引用这段提问 <ArrowUpRight size={14}/></button></aside>}
-</>;
+function FormulaImage({
+  block,
+  renderImage,
+}: {
+  block: Block;
+  renderImage: (page: number) => Promise<string>;
+}) {
+  const [src, setSrc] = useState("");
+  useEffect(() => {
+    let valid = true;
+    const crop = block.formulaCrop;
+    if (!crop) return;
+    renderImage(block.page)
+      .then((data) => {
+        const img = new Image();
+        img.onload = () => {
+          if (!valid) return;
+          const canvas = document.createElement("canvas");
+          const x = Math.round(crop.x * img.width),
+            y = Math.round(crop.y * img.height);
+          canvas.width = Math.max(
+            1,
+            Math.min(img.width - x, Math.round(crop.w * img.width)),
+          );
+          canvas.height = Math.max(
+            1,
+            Math.min(img.height - y, Math.round(crop.h * img.height)),
+          );
+          canvas
+            .getContext("2d")
+            ?.drawImage(
+              img,
+              x,
+              y,
+              canvas.width,
+              canvas.height,
+              0,
+              0,
+              canvas.width,
+              canvas.height,
+            );
+          if (valid) setSrc(canvas.toDataURL("image/png"));
+        };
+        img.src = data;
+      })
+      .catch(() => {});
+    return () => {
+      valid = false;
+    };
+  }, [block, renderImage]);
+  return src ? (
+    <figure className="formula-original">
+      <figcaption>原稿公式 · 第 {block.page} 页</figcaption>
+      <img
+        src={src}
+        alt={`PDF 原稿第 ${block.page} 页中的公式，保留分式、根号和上下标`}
+      />
+    </figure>
+  ) : null;
+}
+function suspiciousFormula(text: string) {
+  return (
+    /[\uFFFD\uE000-\uF8FF]/u.test(text) ||
+    (/(?:[=∑∫√∂∇∈≤≥≈]|[A-Za-z]\s*[_^]\s*[A-Za-z0-9])/.test(text) &&
+      /[\u0000-\u001f]/.test(text.replace(/\n|\t/g, "")))
+  );
+}
+function formulaDominant(block: Block) {
+  return (
+    Boolean(block.formulaCrop) &&
+    block.text.length < 170 &&
+    block.text.split(/\s+/).length < 24 &&
+    block.text.split("\n").length >= 3
+  );
+}
+export default function PaperReader({
+  account,
+  signInPath,
+  signOutPath,
+}: {
+  account: string | null;
+  signInPath: string;
+  signOutPath: string;
+}) {
+  const [paper, setPaper] = useState<Paper | null>(null),
+    [page, setPage] = useState(0),
+    [sourcePage, setSourcePage] = useState(1),
+    [mode, setMode] = useState("both");
+  const [importOpen, setImportOpen] = useState(false),
+    [connectOpen, setConnectOpen] = useState(false),
+    [mobileOpen, setMobileOpen] = useState(false);
+  const [paste, setPaste] = useState(""),
+    [pasteTitle, setPasteTitle] = useState(""),
+    [drag, setDrag] = useState(false),
+    [importing, setImporting] = useState(false),
+    [importProgress, setImportProgress] = useState(0);
+  const [provider, setProvider] = useState<"deepseek" | "openai">("deepseek"),
+    [apiKey, setApiKey] = useState(""),
+    [configured, setConfigured] = useState<boolean | null>(null),
+    [statusError, setStatusError] = useState(""),
+    [error, setError] = useState(""),
+    [status, setStatus] = useState(""),
+    [busy, setBusy] = useState(false);
+  const [translations, setTranslations] = useState<Record<string, string>>({}),
+    [pageNotes, setPageNotes] = useState<Record<number, string[]>>({}),
+    [glossary, setGlossary] = useState<{ term: string; translation: string }[]>(
+      [],
+    );
+  const [sectionSummary, setSectionSummary] = useState<{
+    page: number;
+    text: string;
+  } | null>(null);
+  const [autoTranslate, setAutoTranslate] = useState(false),
+    [autoHighlights, setAutoHighlights] = useState<
+      Record<number, ModelResult["citations"]>
+    >({});
+  const [selected, setSelected] = useState<string[]>([]),
+    [excerpt, setExcerpt] = useState<{ text: string; ids: string[] } | null>(
+      null,
+    );
+  const [autoTranslation, setAutoTranslation] = useState<{
+    text: string;
+    ids: string[];
+    translation?: string;
+    error?: string;
+    x: number;
+    y: number;
+  } | null>(null);
+  const autoController = useRef<AbortController | null>(null),
+    autoSerial = useRef(0),
+    autoKey = useRef(""),
+    autoTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const requests = useRef(new RequestManager()),
+    importedFile = useRef<Blob | null>(null),
+    saveQueue = useRef<Promise<void>>(Promise.resolve()),
+    storageGeneration = useRef(0);
+  const [hydrated, setHydrated] = useState(false),
+    [localSave, setLocalSave] = useState(true),
+    [storageStatus, setStorageStatus] = useState("");
+  const [question, setQuestion] = useState(""),
+    [messages, setMessages] = useState<Message[]>([]);
+  const [preview, setPreview] = useState<{
+    key: string;
+    data: string;
+    error: string;
+  } | null>(null);
+  const imageKey = `${paper?.url || ""}:${sourcePage}`;
+  const pageImage = preview?.key === imageKey ? preview.data : "";
+  const imageError = preview?.key === imageKey ? preview.error : "";
+  const imageLoading = paper?.kind === "pdf" && !pageImage && !imageError;
+  const [attachment, setAttachment] = useState<{
+      page: number;
+      data: string;
+    } | null>(null),
+    [cropMode, setCropMode] = useState(false),
+    [cropStart, setCropStart] = useState<{ x: number; y: number } | null>(null),
+    [cropBox, setCropBox] = useState<{
+      x: number;
+      y: number;
+      w: number;
+      h: number;
+    } | null>(null);
+  const imageFileRef = useRef<HTMLInputElement | null>(null),
+    cropRef = useRef<HTMLDivElement | null>(null);
+  const pdfRef = useRef<PDFDocumentProxy | null>(null),
+    urlRef = useRef(""),
+    imageCache = useRef(new Map<number, string>()),
+    abortRef = useRef<AbortController | null>(null),
+    sessionRef = useRef(0),
+    autoTranslateAttempt = useRef(""),
+    fileRef = useRef<HTMLInputElement | null>(null),
+    chatEnd = useRef<HTMLDivElement | null>(null),
+    glossaryRef = useRef(glossary),
+    paperRef = useRef(paper),
+    apiBusyRef = useRef(false);
+  glossaryRef.current = glossary;
+  paperRef.current = paper;
+  const connected =
+    Boolean(apiKey.trim()) || (provider === "openai" && configured === true);
+  const current = paper?.pages[page],
+    sourcePages = current?.sourcePages || [page + 1],
+    allBlocks = paper?.pages.flatMap((p) => p.blocks) || [];
+  const chosen = excerpt
+    ? allBlocks.filter((b) => excerpt.ids.includes(b.id))
+    : allBlocks.filter((b) => selected.includes(b.id));
+  const selectedText =
+    excerpt?.text ||
+    chosen.map((b) => `[第 ${b.page} 页 · ${b.id}]\n${b.text}`).join("\n\n");
+  const completePages =
+    paper?.pages.filter(
+      (p) =>
+        !p.scanned &&
+        p.blocks.length > 0 &&
+        p.blocks.every((b) => translations[b.id]),
+    ).length || 0;
+  const missingPages = paper?.kind === "pdf" ? unrecognizedPages(paper) : [];
+  const checkConnection = useCallback(() => {
+    return fetch("/api/status")
+      .then(async (response) => {
+        if (!response.ok) throw new Error();
+        const data = (await response.json()) as { configured: boolean };
+        setStatusError("");
+        setConfigured(data.configured === true);
+      })
+      .catch(() => {
+        setConfigured(null);
+        setStatusError("连接状态获取失败，可以重试。");
+      });
+  }, []);
+  useEffect(() => {
+    void checkConnection();
+    return () => {
+      requests.current.cancelAll();
+      abortRef.current?.abort();
+      if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+      void pdfRef.current?.loadingTask.destroy();
+    };
+  }, [checkConnection]);
+  // Restore only the explicit reading snapshot, never provider credentials.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    let active = true;
+    void loadReading()
+      .then(async (saved) => {
+        if (!active || !saved) return;
+        if (saved.state.paper.kind === "pdf") {
+          const restored = await importPDF(
+            new File([saved.file!], saved.state.paper.title + ".pdf", {
+              type: "application/pdf",
+            }),
+            saved.state,
+          );
+          if (!restored) throw new Error("保存的 PDF 无法恢复。");
+        } else {
+          reset(restorablePaper(saved.state));
+          restoreState(saved.state);
+        }
+        if (active) setStorageStatus("已恢复本地阅读，请重新连接 AI。");
+      })
+      .catch(() => {
+        if (active) setStorageStatus("本地阅读无法恢复，仍可重新导入。");
+      })
+      .finally(() => {
+        if (active) setHydrated(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+  useEffect(() => {
+    if (!hydrated || !localSave || !paper) return;
+    const generation = storageGeneration.current;
+    const state: ReadingState = {
+      version: 1,
+      paper,
+      page,
+      sourcePage,
+      mode: mode as ReadingState["mode"],
+      translations,
+      glossary,
+      messages: messages.slice(-2000),
+      pageNotes,
+    };
+    const file = importedFile.current;
+    const timer = setTimeout(() => {
+      saveQueue.current = saveQueue.current
+        .catch(() => {})
+        .then(async () => {
+          if (generation !== storageGeneration.current) return;
+          await saveReading(state, file);
+          if (generation === storageGeneration.current)
+            setStorageStatus("阅读已保存到本机。");
+        })
+        .catch(() => {
+          setStorageStatus("本地保存失败，请检查浏览器存储空间。");
+        });
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [
+    hydrated,
+    localSave,
+    paper,
+    page,
+    sourcePage,
+    mode,
+    translations,
+    glossary,
+    messages,
+    pageNotes,
+  ]);
+  function restoreState(state: ReadingState) {
+    setPage(state.page);
+    setSourcePage(state.sourcePage);
+    setMode(state.mode);
+    setTranslations(state.translations);
+    setGlossary(state.glossary);
+    glossaryRef.current = state.glossary;
+    setMessages(state.messages);
+    setPageNotes(state.pageNotes);
+  }
+  async function forgetSavedReading() {
+    storageGeneration.current++;
+    setLocalSave(false);
+    try {
+      await saveQueue.current.catch(() => {});
+      await clearReading();
+      setStorageStatus("已清除本机保存，自动保存已关闭。");
+    } catch {
+      setStorageStatus("清除本地保存失败，请重试。");
+    }
+  }
+  useEffect(() => {
+    chatEnd.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [messages, busy]);
+  // A section/session key prevents rerendered translation updates from duplicating requests.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (
+      !autoTranslate ||
+      !paper ||
+      !current ||
+      busy ||
+      current.scanned ||
+      !current.blocks.length
+    )
+      return;
+    const key = `${sessionRef.current}:${page}`;
+    if (autoTranslateAttempt.current === key) return;
+    autoTranslateAttempt.current = key;
+    if (current.blocks.some((b) => !translations[b.id])) void translate(false);
+  }, [autoTranslate, paper, page, busy, translations]);
+  useEffect(() => {
+    const dismiss = () => {
+      if (autoTimer.current) clearTimeout(autoTimer.current);
+      autoController.current?.abort();
+      autoController.current = null;
+      autoSerial.current++;
+      autoKey.current = "";
+      setAutoTranslation(null);
+    };
+    const listener = () => {
+      if (autoTimer.current) clearTimeout(autoTimer.current);
+      const selection = window.getSelection();
+      const text = selection?.toString().trim() || "";
+      const anchor = selection?.anchorNode?.parentElement?.closest(
+        ".source-text[data-translation-source]",
+      );
+      const focus = selection?.focusNode?.parentElement?.closest(
+        ".source-text[data-translation-source]",
+      );
+      if (
+        !text ||
+        !anchor ||
+        !focus ||
+        !paper ||
+        mode === "pdf" ||
+        apiBusyRef.current
+      ) {
+        dismiss();
+        return;
+      }
+      const start = allBlocks.findIndex(
+          (b) => b.id === anchor.getAttribute("data-translation-source"),
+        ),
+        end = allBlocks.findIndex(
+          (b) => b.id === focus.getAttribute("data-translation-source"),
+        );
+      if (start < 0 || end < 0) {
+        dismiss();
+        return;
+      }
+      const blocks = allBlocks.slice(
+        Math.min(start, end),
+        Math.max(start, end) + 1,
+      );
+      const key = `${paper.title}:${blocks.map((b) => b.id).join(",")}:${text}`;
+      if (key === autoKey.current) return;
+      autoController.current?.abort();
+      autoController.current = null;
+      const serial = ++autoSerial.current;
+      autoKey.current = key;
+      const rect = selection!.rangeCount
+        ? selection!.getRangeAt(0).getBoundingClientRect()
+        : anchor.getBoundingClientRect();
+      const x = Math.min(
+        Math.max(12, rect.right + 12),
+        Math.max(12, window.innerWidth - 372),
+      );
+      const y = Math.min(
+        Math.max(12, rect.top),
+        Math.max(12, window.innerHeight - 200),
+      );
+      setAutoTranslation({ text, ids: blocks.map((b) => b.id), x, y });
+      if (text.length > 5500) {
+        setAutoTranslation({
+          text,
+          ids: blocks.map((b) => b.id),
+          x,
+          y,
+          error: "选中内容过长，请缩小范围。",
+        });
+        return;
+      }
+      if (!connected) return;
+      autoTimer.current = setTimeout(async () => {
+        if (autoSerial.current !== serial || apiBusyRef.current) return;
+        const controller = requests.current.begin("selection");
+        if (!controller) return;
+        autoController.current = controller;
+        try {
+          const block = blocks.at(-1)!;
+          const id = `selection-${serial}`;
+          const result = await request(
+            "translate",
+            [{ id, text, page: block.page }],
+            "只翻译所选原文，保留术语、公式与数字。",
+            "",
+            controller,
+          );
+          if (autoSerial.current === serial && !controller.signal.aborted)
+            setAutoTranslation({
+              text,
+              ids: blocks.map((b) => b.id),
+              x,
+              y,
+              translation: result.translations[0].text,
+            });
+        } catch (e) {
+          if (autoSerial.current === serial && !controller.signal.aborted)
+            setAutoTranslation({
+              text,
+              ids: blocks.map((b) => b.id),
+              x,
+              y,
+              error: e instanceof Error ? e.message : "翻译失败，请重试。",
+            });
+        } finally {
+          requests.current.finish("selection", controller);
+          if (autoController.current === controller)
+            autoController.current = null;
+        }
+      }, 650);
+    };
+    document.addEventListener("selectionchange", listener);
+    window.addEventListener("scroll", dismiss, true);
+    return () => {
+      document.removeEventListener("selectionchange", listener);
+      window.removeEventListener("scroll", dismiss, true);
+      if (autoTimer.current) clearTimeout(autoTimer.current);
+      autoController.current?.abort();
+    };
+  }, [paper, page, mode, connected, provider, apiKey]);
+  const renderImage = useCallback(async (num: number) => {
+    const cached = imageCache.current.get(num);
+    if (cached) return cached;
+    const doc = pdfRef.current;
+    if (!doc) return "";
+    const pdfPage = await doc.getPage(num);
+    const base = pdfPage.getViewport({ scale: 1 });
+    const viewport = pdfPage.getViewport({
+      scale: Math.min(2, 1400 / base.width),
+    });
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(viewport.width);
+    canvas.height = Math.round(viewport.height);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("浏览器无法显示 PDF 页面。");
+    await pdfPage.render({ canvas, canvasContext: ctx, viewport }).promise;
+    const data = canvas.toDataURL("image/jpeg", 0.86);
+    canvas.width = 0;
+    canvas.height = 0;
+    if (pdfRef.current === doc) {
+      if (imageCache.current.size > 3)
+        imageCache.current.delete(imageCache.current.keys().next().value!);
+      imageCache.current.set(num, data);
+    }
+    return data;
+  }, []);
+  useEffect(() => {
+    let valid = true;
+    if (paper?.kind !== "pdf") return;
+    renderImage(sourcePage)
+      .then((data) => {
+        if (valid)
+          setPreview({
+            key: imageKey,
+            data,
+            error: data ? "" : "原页暂不可用。",
+          });
+      })
+      .catch(() => {
+        if (valid)
+          setPreview({
+            key: imageKey,
+            data: "",
+            error: "原页预览加载失败，可点击“打开原 PDF”核对。",
+          });
+      });
+    return () => {
+      valid = false;
+    };
+  }, [paper?.kind, sourcePage, imageKey, renderImage]);
+  function reset(next: Paper) {
+    requests.current.cancelAll();
+    if (autoTimer.current) clearTimeout(autoTimer.current);
+    autoSerial.current++;
+    sessionRef.current++;
+    autoTranslateAttempt.current = "";
+    abortRef.current?.abort();
+    setPaper(next);
+    setPage(0);
+    setSourcePage(next.pages[0]?.sourcePages?.[0] || 1);
+    setTranslations({});
+    setPageNotes({});
+    setGlossary([]);
+    setSectionSummary(null);
+    setAutoHighlights({});
+    setAutoTranslate(false);
+    setSelected([]);
+    setExcerpt(null);
+    setAutoTranslation(null);
+    autoController.current?.abort();
+    autoKey.current = "";
+    setAttachment(null);
+    setCropMode(false);
+    setMessages([]);
+    setQuestion("");
+    setError("");
+    setStatus("");
+    setMode("both");
+    setImportOpen(false);
+    setMobileOpen(false);
+  }
+  async function importPDF(file: File, restored?: ReadingState) {
+    if (importing || busy) return;
+    setError("");
+    if (!/\.pdf$/i.test(file.name) && file.type !== "application/pdf") {
+      setError("请选择 PDF 文件，或切换到“粘贴原文”。");
+      return;
+    }
+    if (file.size > 20 * 1024 * 1024) {
+      setError("文件超过 20 MB，请压缩或拆分后导入。");
+      return;
+    }
+    setImporting(true);
+    setImportProgress(0);
+    let doc: PDFDocumentProxy | null = null;
+    try {
+      const buffer = await file.arrayBuffer();
+      const signature = new TextDecoder().decode(buffer.slice(0, 1024));
+      if (!signature.includes("%PDF-"))
+        throw new Error("这不是有效的 PDF 文件。");
+      const pdfjs = await import("pdfjs-dist");
+      pdfjs.GlobalWorkerOptions.workerSrc = "/pdfjs/pdf.worker.mjs";
+      doc = await pdfjs.getDocument({
+        data: new Uint8Array(buffer),
+        cMapUrl: "/pdfjs/cmaps/",
+        cMapPacked: true,
+        standardFontDataUrl: "/pdfjs/standard_fonts/",
+        wasmUrl: "/pdfjs/wasm/",
+      }).promise;
+      if (doc.numPages > 100)
+        throw new Error("当前支持最多 100 页的 PDF，请按章节拆分。");
+      const pages: Paper["pages"] = [];
+      for (let i = 1; i <= doc.numPages; i++) {
+        const p = await doc.getPage(i),
+          content = await p.getTextContent();
+        const items = content.items.filter(
+          (
+            x,
+          ): x is typeof x & {
+            str: string;
+            transform: number[];
+            width: number;
+            height: number;
+          } => "str" in x,
+        );
+        const blocks = extractBlocks(
+          items,
+          i,
+          p.getViewport({ scale: 1 }).width,
+          p.getViewport({ scale: 1 }).height,
+        );
+        const label = blocks
+          .map((b) => b.text)
+          .find(
+            (t) =>
+              /^(abstract|introduction|conclusion|references|摘要|引言|结论|\d+(\.\d+)*\s+[A-Z])/i.test(
+                t.trim(),
+              ) && t.length < 120,
+          );
+        pages.push({
+          number: i,
+          label: label?.split("\n")[0].slice(0, 50) || `第 ${i} 页`,
+          blocks,
+          scanned: blocks.reduce((n, b) => n + b.text.trim().length, 0) < 30,
+        });
+        setImportProgress(Math.round((i / doc.numPages) * 100));
+      }
+      const old = pdfRef.current;
+      pdfRef.current = doc;
+      doc = null;
+      void old?.loadingTask.destroy();
+      imageCache.current.clear();
+      if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+      urlRef.current = URL.createObjectURL(file);
+      importedFile.current = file;
+      reset(
+        restored
+          ? restorablePaper(restored, urlRef.current)
+          : {
+              title: file.name.replace(/\.pdf$/i, ""),
+              pages: groupBySections(pages),
+              physicalPages: pages,
+              url: urlRef.current,
+              kind: "pdf",
+            },
+      );
+      if (restored) restoreState(restored);
+      return true;
+    } catch (e) {
+      await doc?.loadingTask.destroy();
+      setError(
+        e instanceof Error
+          ? e.name === "PasswordException"
+            ? "此 PDF 已加密，请先解除密码保护再导入。"
+            : e.message
+          : "PDF 读取失败，请换一个文件。",
+      );
+      return false;
+    } finally {
+      setImporting(false);
+    }
+  }
+  function importText() {
+    const text = paste.trim();
+    if (!text) {
+      setError("请先粘贴论文内容。");
+      return;
+    }
+    if (text.length > 400000) {
+      setError("文本超过 40 万字符，请按章节导入。");
+      return;
+    }
+    void pdfRef.current?.loadingTask.destroy();
+    pdfRef.current = null;
+    imageCache.current.clear();
+    if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+    urlRef.current = "";
+    importedFile.current = null;
+    reset(fromText(text, pasteTitle));
+    setPaste("");
+    setPasteTitle("");
+  }
+  async function example() {
+    setError("");
+    try {
+      const r = await fetch("/attention.pdf");
+      if (!r.ok) throw new Error();
+      await importPDF(
+        new File([await r.blob()], "Attention Is All You Need.pdf", {
+          type: "application/pdf",
+        }),
+      );
+    } catch {
+      setError("示例加载失败，请直接上传论文。");
+    }
+  }
+  function toggleBlock(id: string, on: boolean) {
+    setExcerpt(null);
+    setSelected((old) =>
+      on ? [...new Set([...old, id])] : old.filter((x) => x !== id),
+    );
+  }
+
+  function clearSelection() {
+    setSelected([]);
+    setExcerpt(null);
+  }
+  function newConversation() {
+    if (apiBusyRef.current) return;
+    setMessages([]);
+    setQuestion("");
+    setSelected([]);
+    setExcerpt(null);
+    setAttachment(null);
+    setError("");
+    setStatus("");
+    autoController.current?.abort();
+    autoKey.current = "";
+    setAutoTranslation(null);
+    window.getSelection()?.removeAllRanges();
+    focusQuestion();
+  }
+  function focusQuestion() {
+    if (window.innerWidth < 931) setMobileOpen(true);
+    setTimeout(() => {
+      const fields = [
+        ...document.querySelectorAll<HTMLTextAreaElement>(".composer textarea"),
+      ];
+      fields.find((el) => el.getClientRects().length > 0)?.focus();
+    }, 80);
+  }
+  function askFromAutoSelection() {
+    if (!autoTranslation) return;
+    setExcerpt({ text: autoTranslation.text, ids: autoTranslation.ids });
+    setSelected([]);
+    autoController.current?.abort();
+    autoKey.current = "";
+    setAutoTranslation(null);
+    window.getSelection()?.removeAllRanges();
+    focusQuestion();
+  }
+  async function translateChecked() {
+    if (
+      !selected.length ||
+      apiBusyRef.current ||
+      !paper ||
+      !requireConnection()
+    )
+      return;
+    const blocks = allBlocks.filter(
+      (b) => selected.includes(b.id) && !translations[b.id],
+    );
+    if (!blocks.length) {
+      setMode("both");
+      return;
+    }
+    if (blocks.reduce((n, b) => n + b.text.length, 0) > 5500) {
+      setError("勾选内容过长，请减少段落后再翻译。");
+      return;
+    }
+    const c = begin();
+    setStatus("正在翻译勾选段落…");
+    try {
+      const result = await request(
+        "translate",
+        blocks,
+        "忠实翻译所选段落。",
+        "",
+        c,
+      );
+      mergeResult(result, page + 1);
+      setMode("both");
+      setStatus("勾选段落已翻译。");
+    } catch (e) {
+      handleError(e);
+    } finally {
+      finish();
+    }
+  }
+  function goTo(index: number, id?: string) {
+    setPage(index);
+    setSourcePage(paper?.pages[index]?.sourcePages?.[0] || index + 1);
+    setMobileOpen(false);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    if (id)
+      setTimeout(
+        () =>
+          document
+            .getElementById(id)
+            ?.scrollIntoView({ behavior: "smooth", block: "center" }),
+        160,
+      );
+  }
+  function requireConnection() {
+    if (!connected) {
+      setConnectOpen(true);
+      return false;
+    }
+    return true;
+  }
+  async function attachFile(file: File) {
+    if (!file.type.startsWith("image/")) {
+      setError("请选择图片文件。");
+      return;
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      setError("图片不能超过 8 MB。");
+      return;
+    }
+    try {
+      const bitmap = await createImageBitmap(file);
+      const scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(bitmap.width * scale);
+      canvas.height = Math.round(bitmap.height * scale);
+      canvas
+        .getContext("2d")
+        ?.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      bitmap.close();
+      setAttachment({
+        page: sourcePage,
+        data: canvas.toDataURL("image/jpeg", 0.85),
+      });
+      setError("");
+    } catch {
+      setError("图片无法读取，请换一张截图。");
+    }
+  }
+  function cropPoint(e: React.PointerEvent<HTMLDivElement>) {
+    const rect = cropRef.current!.getBoundingClientRect();
+    return {
+      x: Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)),
+      y: Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height)),
+    };
+  }
+  function cropEnd() {
+    if (!cropBox || !pageImage) return;
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement("canvas");
+      c.width = Math.max(1, Math.round(cropBox.w * img.width));
+      c.height = Math.max(1, Math.round(cropBox.h * img.height));
+      c.getContext("2d")?.drawImage(
+        img,
+        cropBox.x * img.width,
+        cropBox.y * img.height,
+        c.width,
+        c.height,
+      );
+      setAttachment({
+        page: sourcePage,
+        data: c.toDataURL("image/jpeg", 0.88),
+      });
+      setCropMode(false);
+      setCropBox(null);
+      setCropStart(null);
+      setMobileOpen(true);
+    };
+    img.src = pageImage;
+  }
+  async function request(
+    action: APIAction,
+    blocks: Block[],
+    q: string,
+    selection: string,
+    controller: AbortController,
+    history: Message[] = [],
+  ): Promise<ModelResult> {
+    const thisPaper = paperRef.current;
+    if (!thisPaper) throw new Error("请先导入论文。");
+    const nums = [...new Set(blocks.map((b) => b.page))];
+    if (action === "ocr" && !nums.length) nums.push(sourcePage);
+    const images: { page: number; data: string }[] = [];
+    if (attachment && action !== "translate" && action !== "ocr")
+      images.push(attachment);
+    if (
+      thisPaper.kind === "pdf" &&
+      (!attachment || action === "translate" || action === "ocr")
+    ) {
+      for (const n of nums.slice(0, 3)) {
+        const data = await renderImage(n);
+        if (data) images.push({ page: n, data });
+      }
+    }
+    if (controller.signal.aborted)
+      throw new DOMException("Cancelled", "AbortError");
+    const res = await fetch("/api/assist", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-AI-Provider": provider,
+        ...(apiKey.trim() ? { "X-AI-API-Key": apiKey.trim() } : {}),
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        action,
+        blocks,
+        question: q,
+        selected: selection,
+        images,
+        title: thisPaper.title,
+        glossary: glossaryRef.current,
+        history: history
+          .slice(-8)
+          .map((m) => ({ role: m.role, text: m.text.slice(0, 16000) })),
+      }),
+    });
+    const data = (await res.json()) as ModelResult & { error?: string };
+    if (controller.signal.aborted)
+      throw new DOMException("Cancelled", "AbortError");
+    if (!res.ok) {
+      if (res.status === 503 && !apiKey.trim()) setConfigured(false);
+      throw new Error(data.error || "请求失败，请重试。");
+    }
+    return data;
+  }
+  function begin() {
+    if (autoTimer.current) clearTimeout(autoTimer.current);
+    autoSerial.current++;
+    autoKey.current = "";
+    setAutoTranslation(null);
+    apiBusyRef.current = true;
+    setBusy(true);
+    setError("");
+    const c = requests.current.begin("main")!;
+    abortRef.current = c;
+    return c;
+  }
+  function finish() {
+    if (abortRef.current) requests.current.finish("main", abortRef.current);
+    apiBusyRef.current = false;
+    setBusy(false);
+    abortRef.current = null;
+  }
+  function handleError(e: unknown) {
+    if (e instanceof Error && e.name === "AbortError") {
+      setStatus("已停止。已完成的内容仍保留。");
+      return;
+    }
+    setError(e instanceof Error ? e.message : "处理失败，请稍后重试。");
+    setStatus("");
+  }
+  function mergeResult(result: ModelResult, num: number) {
+    setTranslations((old) => ({
+      ...old,
+      ...Object.fromEntries(result.translations.map((t) => [t.id, t.text])),
+    }));
+    setPageNotes((old) => ({
+      ...old,
+      [num]: [...new Set([...(old[num] || []), ...result.warnings])],
+    }));
+    if (result.glossary.length) {
+      const map = new Map(
+        glossaryRef.current.map((g) => [g.term.toLowerCase(), g]),
+      );
+      for (const g of result.glossary)
+        if (!map.has(g.term.toLowerCase())) map.set(g.term.toLowerCase(), g);
+      const next = [...map.values()].slice(0, 80);
+      glossaryRef.current = next;
+      setGlossary(next);
+    }
+  }
+  async function translate(all = false) {
+    if (apiBusyRef.current || !paper || !current || !requireConnection())
+      return;
+    const c = begin();
+    try {
+      const targets = all ? paper.pages : [current];
+      for (const p of targets) {
+        if (c.signal.aborted) break;
+        if (p.scanned || !p.blocks.length)
+          throw new Error(`「${p.label}」没有足够可选文字。请先识别对应原页。`);
+        const remaining = p.blocks.filter((b) => !translations[b.id]);
+        let batch: Block[] = [];
+        let count = 0;
+        const batches: Block[][] = [];
+        for (const b of remaining) {
+          if (
+            (count + b.text.length > 5500 || batch.length >= 90) &&
+            batch.length
+          ) {
+            batches.push(batch);
+            batch = [];
+            count = 0;
+          }
+          batch.push(b);
+          count += b.text.length;
+        }
+        if (batch.length) batches.push(batch);
+        for (let i = 0; i < batches.length; i++) {
+          setStatus(
+            `正在翻译第 ${p.number} / ${paper.pages.length} 节 · ${i + 1}/${batches.length} 批`,
+          );
+          const result = await request(
+            "translate",
+            batches[i],
+            "忠实、完整地逐段翻译为简体中文。",
+            "",
+            c,
+          );
+          mergeResult(result, p.number);
+        }
+      }
+      setStatus(
+        c.signal.aborted
+          ? "已停止，已完成译文保留。"
+          : all
+            ? "全文翻译完成。请对照原文核对公式、数值与注释。"
+            : "本页翻译完成。",
+      );
+    } catch (e) {
+      handleError(e);
+    } finally {
+      finish();
+    }
+  }
+  async function ocr() {
+    if (apiBusyRef.current || !paper || !current || !requireConnection())
+      return;
+    const physicalPage = sourcePage;
+    const thisPaper = paper;
+    const oldIds = new Set(
+      allBlocks.filter((b) => b.page === physicalPage).map((b) => b.id),
+    );
+    const c = begin();
+    setStatus("正在识别本页文字…");
+    try {
+      const result = await request(
+        "ocr",
+        [],
+        "按原始阅读顺序识别当前页全部文字。",
+        "",
+        c,
+      );
+      if (c.signal.aborted) return;
+      const next = replacePhysicalPageOCR(
+        thisPaper,
+        physicalPage,
+        result.transcript,
+      );
+      const index = next.pages.findIndex((p) =>
+        p.sourcePages?.includes(physicalPage),
+      );
+      setPaper(next);
+      setPage(Math.max(0, index));
+      setSourcePage(physicalPage);
+      setTranslations((old) =>
+        Object.fromEntries(
+          Object.entries(old).filter(([id]) => !oldIds.has(id)),
+        ),
+      );
+      setPageNotes({
+        [Math.max(0, index) + 1]: [
+          "本页为 AI 文字识别结果，请与原页核对后翻译。",
+          ...result.warnings,
+        ],
+      });
+      setSectionSummary(null);
+      setAutoHighlights({});
+      setSelected([]);
+      setExcerpt(null);
+      autoTranslateAttempt.current = "";
+      setStatus("文字识别完成，请核对原页。");
+    } catch (e) {
+      handleError(e);
+    } finally {
+      finish();
+    }
+  }
+  async function ask(kind: "ask" | "explain", preset?: string) {
+    if (apiBusyRef.current || !paper || !current) return;
+    const q = preset || question.trim();
+    if (kind === "ask" && !q && !attachment) return;
+    if (!requireConnection()) return;
+    const scopePages = [
+      ...new Set([
+        ...sourcePages,
+        ...chosen.map((b) => b.page),
+        ...(attachment ? [attachment.page] : []),
+      ]),
+    ].sort((a, b) => a - b);
+    const blocks = attachment
+      ? [...chosen]
+      : [
+          ...new Map(
+            [...current.blocks, ...chosen].map((b) => [b.id, b]),
+          ).values(),
+        ];
+    if (!blocks.length && !attachment) {
+      setError("当前页没有可引用的文字，请先识别本页文字或上传截图。");
+      return;
+    }
+    if (
+      blocks.reduce((n, b) => n + b.text.length, 0) > 48000 ||
+      selectedText.length > 16000
+    ) {
+      setError("引用内容过多，请减少勾选段落后再试。");
+      return;
+    }
+    const c = begin();
+    const prompt =
+      q ||
+      (attachment
+        ? "请解释截图中的公式，逐一说明符号、维度与推导；辨认不清处请明确指出。"
+        : "请讲解这一节的核心内容、关键术语与必要的数学细节。");
+    setMessages((old) => [
+      ...old,
+      {
+        role: "user",
+        text: prompt,
+        scope: `依据第 ${scopePages.join("、")} 页${attachment ? " · 附公式截图" : ""}${selectedText ? "与所选片段" : ""}`,
+      },
+    ]);
+    setQuestion("");
+    setStatus("正在结合原文回答…");
+    try {
+      const result = await request(
+        kind,
+        blocks,
+        prompt,
+        selectedText,
+        c,
+        messages,
+      );
+      setMessages((old) => [
+        ...old,
+        {
+          role: "assistant",
+          text: result.answer,
+          citations: result.citations,
+          warnings: result.warnings,
+          scope: `依据「${current.label}」及第 ${scopePages.join("、")} 页选段`,
+        },
+      ]);
+      setAttachment(null);
+      setStatus("");
+    } catch (e) {
+      handleError(e);
+      setQuestion(prompt);
+    } finally {
+      finish();
+    }
+  }
+  async function summarizeSection() {
+    if (
+      apiBusyRef.current ||
+      !paper ||
+      !current ||
+      !current.blocks.length ||
+      !requireConnection()
+    )
+      return;
+    if (current.blocks.reduce((n, b) => n + b.text.length, 0) > 48000) {
+      setError("本节内容过长，暂时无法生成摘要。");
+      return;
+    }
+    const pageIndex = page;
+    const c = begin();
+    setStatus("正在提炼本节要点…");
+    try {
+      const result = await request(
+        "summarize",
+        current.blocks,
+        "请只依据给定原文，生成恰好三条简体中文摘要，每条一句：1. 本节要解决的问题；2. 核心方法或论证；3. 主要结论及原文明确提到的限制。不要补充原文没有的信息，不要写开场白。",
+        "",
+        c,
+      );
+      if (!c.signal.aborted)
+        setSectionSummary({
+          page: pageIndex,
+          text: result.summary
+            .map((line, i) => `${i + 1}. ${line}`)
+            .join("\n\n"),
+        });
+      mergeResult(result, pageIndex + 1);
+      setStatus("摘要已生成。");
+    } catch (e) {
+      handleError(e);
+    } finally {
+      finish();
+    }
+  }
+  async function highlightSection() {
+    if (
+      apiBusyRef.current ||
+      !paper ||
+      !current ||
+      !current.blocks.length ||
+      !requireConnection()
+    )
+      return;
+    if (current.blocks.reduce((n, b) => n + b.text.length, 0) > 48000) {
+      setError("本节内容过长，暂时无法分析重点。");
+      return;
+    }
+    const pageIndex = page;
+    const c = begin();
+    setStatus("正在标记本节重点…");
+    try {
+      const result = await request(
+        "highlight",
+        current.blocks,
+        "阅读本节并找出最多 5 个最值得关注的原文段落，优先覆盖：研究新意/问题、关键方法或论证、主要结果/限制。answer 用简短中文说明每个重点及其类别；citations 仅填写对应 blocks 的 id 和逐字原文短句。只引用确实承载重点的段落，不够明确的类别不要推断。",
+        "",
+        c,
+      );
+      if (!c.signal.aborted)
+        setAutoHighlights((old) => ({
+          ...old,
+          [pageIndex]: result.highlights,
+        }));
+      mergeResult(result, pageIndex + 1);
+      setStatus(
+        result.highlights.length
+          ? "本节重点已标记，可点击原文引用查看。"
+          : "本节没有找到足够明确的重点段落。",
+      );
+    } catch (e) {
+      handleError(e);
+    } finally {
+      finish();
+    }
+  }
+  function toggleAutoTranslate() {
+    if (autoTranslate) {
+      setAutoTranslate(false);
+      return;
+    }
+    if (!requireConnection()) return;
+    autoTranslateAttempt.current = "";
+    setAutoTranslate(true);
+  }
+  function stop() {
+    if (autoTimer.current) clearTimeout(autoTimer.current);
+    autoSerial.current++;
+    autoKey.current = "";
+    requests.current.cancelAll();
+    autoController.current = null;
+    setAutoTranslation(null);
+    setStatus("已停止等待；已完成内容保留。");
+  }
+  function showPanel() {
+    setMobileOpen(true);
+  }
+  useEffect(() => {
+    const ctx = (
+      document as unknown as {
+        modelContext?: {
+          registerTool: (
+            tool: unknown,
+            opts: { signal: AbortSignal },
+          ) => Promise<void>;
+        };
+      }
+    ).modelContext;
+    if (!ctx?.registerTool) return;
+    const ac = new AbortController();
+    const tools = [
+      {
+        name: "read_paper_context",
+        description: "读取已导入论文的可见页和段落编号，不调用 AI。",
+        inputSchema: {
+          type: "object",
+          properties: {},
+          additionalProperties: false,
+        },
+        annotations: { readOnlyHint: true, untrustedContentHint: true },
+        execute: () => ({
+          title: paper?.title || null,
+          page: page + 1,
+          totalPages: paper?.pages.length || 0,
+          blocks: current?.blocks || [],
+          selected,
+        }),
+      },
+      {
+        name: "select_paper_passages",
+        description: "用段落编号勾选论文内容供后续提问。不会发送 AI 请求。",
+        inputSchema: {
+          type: "object",
+          properties: { ids: { type: "array", items: { type: "string" } } },
+          required: ["ids"],
+          additionalProperties: false,
+        },
+        annotations: { readOnlyHint: false, untrustedContentHint: false },
+        execute: (input: unknown) => {
+          const ids = (input as { ids?: unknown })?.ids;
+          if (
+            !Array.isArray(ids) ||
+            !ids.every(
+              (id) =>
+                typeof id === "string" && allBlocks.some((b) => b.id === id),
+            )
+          )
+            throw new Error("段落编号不存在");
+          setExcerpt(null);
+          setSelected([...new Set(ids)]);
+          return { selected: [...new Set(ids)] };
+        },
+      },
+    ];
+    for (const t of tools) {
+      try {
+        void Promise.resolve(ctx.registerTool(t, { signal: ac.signal })).catch(
+          () => {},
+        );
+      } catch {}
+    }
+    return () => ac.abort();
+  }, [paper, page, selected]);
+  const importForm = (
+    <Tabs defaultValue="file" className="import-tabs">
+      <TabsList>
+        <TabsTrigger value="file">上传 PDF</TabsTrigger>
+        <TabsTrigger value="text">粘贴原文</TabsTrigger>
+      </TabsList>
+      <TabsContent value="file">
+        <div
+          className={`dropzone ${drag ? "dragging" : ""} ${importing ? "loading" : ""}`}
+          onDragOver={(e) => {
+            e.preventDefault();
+            setDrag(true);
+          }}
+          onDragLeave={() => setDrag(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDrag(false);
+            const file = e.dataTransfer.files[0];
+            if (file) void importPDF(file);
+          }}
+        >
+          {importing ? <LoaderCircle className="spin" /> : <Upload />}
+          <h2>{importing ? "正在读取论文…" : "放入你想读的论文"}</h2>
+          <p>
+            {importing
+              ? `${importProgress}% · 逐页提取原文`
+              : "拖拽 PDF 到这里，或点击选择文件"}
+          </p>
+          <span className="file-limit">PDF · 最多 20 MB / 100 页</span>
+          <input
+            ref={fileRef}
+            disabled={importing || busy}
+            type="file"
+            accept="application/pdf,.pdf"
+            aria-label="选择论文 PDF"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) void importPDF(f);
+              e.target.value = "";
+            }}
+          />
+        </div>
+        {importing && (
+          <Progress
+            value={importProgress}
+            aria-label="论文读取进度"
+            className="mt-4 h-1"
+          />
+        )}
+        <div className="sample-line">
+          <span>手边没有论文？</span>
+          <button disabled={importing || busy} onClick={() => void example()}>
+            试读 Attention Is All You Need <ArrowUpRight size={14} />
+          </button>
+        </div>
+      </TabsContent>
+      <TabsContent value="text">
+        <label className="field-label" htmlFor="paper-title">
+          论文标题（可选）
+        </label>
+        <input
+          id="paper-title"
+          className="text-input"
+          value={pasteTitle}
+          maxLength={500}
+          onChange={(e) => setPasteTitle(e.target.value)}
+          placeholder="为这次阅读起个名字"
+        />
+        <label className="field-label" htmlFor="paper-text">
+          论文原文
+        </label>
+        <textarea
+          id="paper-text"
+          rows={7}
+          value={paste}
+          onChange={(e) => setPaste(e.target.value)}
+          placeholder="粘贴摘要、章节或全文，用空行分隔段落。支持中英文，最多 40 万字符。"
+        />
+        <button
+          className="primary import-button"
+          disabled={!paste.trim() || busy || importing}
+          onClick={importText}
+        >
+          开始阅读 <ArrowUpRight size={16} />
+        </button>
+      </TabsContent>
+    </Tabs>
+  );
+  const panel = (
+    <>
+      <div className="panel-title">
+        <Sparkles size={19} />
+        <b>一起读懂</b>
+        {paper && (
+          <button
+            type="button"
+            className="new-conversation"
+            disabled={busy}
+            onClick={newConversation}
+            title="清除旧问答、引用和截图，从当前章节重新提问"
+          >
+            <Plus size={15} />
+            新对话
+          </button>
+        )}
+      </div>
+      {!paper ? (
+        <div className="assistant-empty">
+          <span className="spark-circle">
+            <Sparkles size={28} />
+          </span>
+          <h3>你的问题，值得展开。</h3>
+          <p>
+            导入论文后，勾选段落或划选文字，
+            <br />
+            在这里翻译、解释或继续追问。
+          </p>
+          <span className="example-question">
+            “这段结论需要哪些前提？” <ArrowUpRight size={15} />
+          </span>
+        </div>
+      ) : (
+        <>
+          <div className="panel-top">
+            {error && (
+              <div className="panel-error" role="alert">
+                {error}
+              </div>
+            )}
+            <details
+              className="insight-section highlight-section"
+              open={(autoHighlights[page]?.length || 0) > 0}
+            >
+              <summary>
+                <span>AI 重点标记</span>
+                <span className="insight-count">
+                  {autoHighlights[page]?.length
+                    ? `${autoHighlights[page].length} 处`
+                    : "当前章节"}
+                </span>
+              </summary>
+              {autoHighlights[page]?.length ? (
+                <div className="highlight-list">
+                  {autoHighlights[page].map((item, i) => (
+                    <button
+                      type="button"
+                      key={`${item.id}-${i}`}
+                      onClick={() => goTo(page, item.id)}
+                    >
+                      <span>{item.quote}</span>
+                      <small>{item.id} · 点击定位</small>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <p className="insight-empty">
+                  标记本节的新意、方法与结果段落。
+                </p>
+              )}
+            </details>
+            <details className="insight-section glossary-section" open>
+              <summary>
+                <span>关键词词典</span>
+                <span className="insight-count">
+                  {glossary.length || "等待翻译提取"}
+                </span>
+              </summary>
+              {glossary.length ? (
+                <div className="glossary-list">
+                  {glossary.slice(0, 18).map((item) => (
+                    <button
+                      type="button"
+                      key={item.term}
+                      title={`${item.term}：${item.translation}`}
+                      onClick={() => {
+                        setQuestion(
+                          `请结合本节解释“${item.term}”（${item.translation}）的含义。`,
+                        );
+                        focusQuestion();
+                      }}
+                    >
+                      <span>{item.term}</span>
+                      <b>{item.translation}</b>
+                    </button>
+                  ))}
+                  {glossary.length > 18 && (
+                    <span className="glossary-more">
+                      另有 {glossary.length - 18} 个术语
+                    </span>
+                  )}
+                </div>
+              ) : (
+                <p className="insight-empty">翻译论文时会自动整理关键术语。</p>
+              )}
+            </details>
+            <section className="insight-section summary-section">
+              <div className="insight-heading">
+                <span>三行摘要</span>
+                <button
+                  type="button"
+                  className="summary-action"
+                  disabled={busy || !current?.blocks.length}
+                  onClick={() => void summarizeSection()}
+                >
+                  {busy && status.includes("提炼") ? (
+                    <LoaderCircle size={13} className="spin" />
+                  ) : (
+                    <Sparkles size={13} />
+                  )}{" "}
+                  {sectionSummary?.page === page ? "重新生成" : "生成本节摘要"}
+                </button>
+              </div>
+              {sectionSummary?.page === page ? (
+                <div className="section-summary">
+                  <RichText text={sectionSummary.text} />
+                </div>
+              ) : (
+                <p className="insight-empty">
+                  按“问题、方法、结论”提炼当前章节。
+                </p>
+              )}
+            </section>
+            <div className="selection-card">
+              <div className="selection-header">
+                <span>
+                  <Quote size={13} />{" "}
+                  {selectedText ? `已引用 ${chosen.length} 段` : "引用原文"}
+                </span>
+                {selectedText && (
+                  <button aria-label="清除引用" onClick={clearSelection}>
+                    <X size={14} />
+                  </button>
+                )}
+              </div>
+              <p>
+                {selectedText || "勾选段落左侧的方框，或直接划选你想问的文字。"}
+              </p>
+              {selectedText && (
+                <>
+                  <small>
+                    第 {[...new Set(chosen.map((b) => b.page))].join("、")} 页 ·
+                    保留原文上下文
+                  </small>
+                  <button
+                    type="button"
+                    className="ask-selected"
+                    disabled={busy}
+                    onClick={focusQuestion}
+                  >
+                    根据所选内容提问 <ArrowUpRight size={14} />
+                  </button>
+                </>
+              )}
+            </div>
+            <div className="quick-actions">
+              <button
+                disabled={busy}
+                onClick={() =>
+                  void ask(
+                    "explain",
+                    "请先用一句话说清这部分在解决什么问题，再按‘直觉—具体例子—原文逻辑—适用前提’讲清楚。先解释必需的术语，避免空泛总结；有选段或截图时只聚焦它。",
+                  )
+                }
+              >
+                <Sparkles size={14} />
+                通俗讲解
+              </button>
+              <button
+                disabled={busy}
+                onClick={() =>
+                  void ask(
+                    "ask",
+                    "请聚焦我选中的公式或截图。先准确抄写能辨认的公式；逐项解释符号、下标、维度与单位；逐行说明从上一式到下一式做了什么、用了哪个假设；最后代入一个简单数值例子并指出常见误解。看不清的符号不要猜。",
+                  )
+                }
+              >
+                <span className="math-icon">ƒ</span>公式拆解
+              </button>
+            </div>
+          </div>
+          <div className="chat-messages" aria-live="polite">
+            {messages.length === 0 ? (
+              <div className="chat-hint">
+                <BookOpen size={20} />
+                <h3>从一个具体问题开始</h3>
+                <p>
+                  例如：这个假设为什么成立？
+                  <br />
+                  这一步推导省略了什么？
+                </p>
+                <small>新对话只依据当前章节和新选的段落。</small>
+              </div>
+            ) : (
+              messages.map((m, i) => (
+                <div className={`message ${m.role}`} key={i}>
+                  <div className="message-meta">
+                    {m.role === "user" ? "你" : "论文助手"}
+                    <span>{m.role === "assistant" ? "AI 生成" : ""}</span>
+                  </div>
+                  <RichText text={m.text} />
+                  {m.citations?.length ? (
+                    <div className="citations">
+                      {m.citations.map((c, j) => (
+                        <button
+                          key={j}
+                          title={c.quote}
+                          onClick={() => {
+                            const b = allBlocks.find((b) => b.id === c.id);
+                            if (b)
+                              goTo(
+                                paper.pages.findIndex((p) =>
+                                  p.blocks.some((x) => x.id === b.id),
+                                ),
+                                b.id,
+                              );
+                          }}
+                        >
+                          <Link2 size={12} />
+                          {c.id}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                  {m.warnings?.map((w, j) => (
+                    <p className="small-warning" key={j}>
+                      {w}
+                    </p>
+                  ))}
+                  {m.scope && <p className="scope-text">{m.scope}</p>}
+                </div>
+              ))
+            )}
+            {busy && (
+              <div className="thinking">
+                <LoaderCircle size={15} className="spin" />
+                {status || "正在处理…"}
+              </div>
+            )}
+            <div ref={chatEnd} />
+          </div>
+          <div className="composer">
+            <div className="image-attach">
+              <input
+                ref={imageFileRef}
+                type="file"
+                accept="image/*"
+                hidden
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) void attachFile(file);
+                  e.target.value = "";
+                }}
+              />
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => imageFileRef.current?.click()}
+              >
+                上传原文截图
+              </button>
+              {paper?.kind === "pdf" && (
+                <button
+                  type="button"
+                  disabled={busy || !pageImage}
+                  onClick={() => {
+                    setMode("pdf");
+                    setCropMode(true);
+                    setMobileOpen(false);
+                  }}
+                >
+                  框选当前原页
+                </button>
+              )}
+              {attachment && (
+                <div className="attached-image">
+                  <img src={attachment.data} alt="待提问的公式截图" />
+                  <button
+                    type="button"
+                    onClick={() => setAttachment(null)}
+                    aria-label="移除截图"
+                  >
+                    <X size={14} />
+                  </button>
+                  <span>原第 {attachment.page} 页 · 已附图</span>
+                </div>
+              )}
+            </div>
+            <label className="sr-only" htmlFor="question">
+              向论文提问
+            </label>
+            <textarea
+              id="question"
+              value={question}
+              onChange={(e) => setQuestion(e.target.value)}
+              placeholder="带着原文，问一个问题…"
+              maxLength={5000}
+              rows={3}
+              onKeyDown={(e) => {
+                if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+                  e.preventDefault();
+                  void ask("ask");
+                }
+              }}
+            />
+            <div className="composer-bottom">
+              <span>Ctrl / ⌘ + Enter</span>
+              {busy ? (
+                <button
+                  className="send stop"
+                  onClick={stop}
+                  aria-label="停止生成"
+                >
+                  <StopCircle size={18} />
+                </button>
+              ) : (
+                <button
+                  className="send"
+                  disabled={!question.trim() && !attachment}
+                  onClick={() => void ask("ask")}
+                  aria-label="发送问题"
+                >
+                  <ArrowUp size={19} />
+                </button>
+              )}
+            </div>
+            <p>AI 回答可能有误，请通过引用核对原文。</p>
+          </div>
+        </>
+      )}
+      {!connected && (
+        <button
+          className="connection-banner"
+          onClick={() => setConnectOpen(true)}
+        >
+          <Settings2 size={14} />
+          {statusError || "AI 服务待连接"}
+          <ArrowUpRight size={13} />
+        </button>
+      )}
+    </>
+  );
+  return (
+    <>
+      <header className="topbar">
+        <Link className="brand" href="/" aria-label="Paper Room 首页">
+          <span className="logo">P</span>Paper Room
+          <span className="slash">/</span>
+          <b>论文阅读室</b>
+        </Link>
+        <span className="header-note">READ · UNDERSTAND · QUESTION</span>
+        <div className="header-actions">
+          <button
+            className={`connection-status ${connected ? "ready" : ""}`}
+            onClick={() => setConnectOpen(true)}
+          >
+            {connected ? <Check size={14} /> : <Settings2 size={14} />}
+            <span>{connected ? "AI 已配置" : "连接 AI"}</span>
+          </button>
+          {account ? (
+            <a
+              className="account-link"
+              href={signOutPath}
+              target="_top"
+              title={account}
+            >
+              退出登录
+            </a>
+          ) : (
+            <a className="account-link" href={signInPath} target="_top">
+              登录 ChatGPT
+            </a>
+          )}
+          {paper && (
+            <button
+              className="new-paper"
+              disabled={busy || importing}
+              onClick={() => {
+                setError("");
+                setImportOpen(true);
+              }}
+            >
+              <Plus size={16} />
+              <span>导入论文</span>
+            </button>
+          )}
+        </div>
+      </header>
+      <SidebarProvider className="site-sidebar-provider">
+        <div className="workspace">
+          <Sidebar collapsible="none" className="paper-nav">
+            <div className="nav-heading">
+              {paper ? "论文章节" : "阅读目录"}
+              <span>{paper ? `${paper.pages.length} 节` : "CONTENTS"}</span>
+            </div>
+            <SidebarContent>
+              {paper ? (
+                <SidebarMenu className="page-menu">
+                  {paper.pages.map((p, i) => (
+                    <SidebarMenuItem key={p.number}>
+                      <SidebarMenuButton
+                        isActive={i === page}
+                        onClick={() => goTo(i)}
+                        className="page-menu-button"
+                      >
+                        <span className="page-number">
+                          {String(p.number).padStart(2, "0")}
+                        </span>
+                        <span className="page-label">{p.label}</span>
+                        {!p.scanned &&
+                          p.blocks.length > 0 &&
+                          p.blocks.every((b) => translations[b.id]) && (
+                            <Check size={13} />
+                          )}
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  ))}
+                </SidebarMenu>
+              ) : (
+                <div className="nav-empty">
+                  <BookOpen size={22} />
+                  <p>
+                    导入论文后，
+                    <br />
+                    从这里开始阅读。
+                  </p>
+                </div>
+              )}
+            </SidebarContent>
+            <div className="nav-bottom">
+              {paper ? (
+                <>
+                  <div className="progress-label">
+                    <span>已翻译</span>
+                    <b>
+                      {completePages} / {paper.pages.length} 节
+                    </b>
+                  </div>
+                  <Progress
+                    value={(completePages / paper.pages.length) * 100}
+                    className="h-1"
+                    aria-label="全文翻译进度"
+                  />
+                </>
+              ) : (
+                <span>
+                  让每一次阅读
+                  <br />
+                  都有更深一层的理解。
+                </span>
+              )}
+            </div>
+          </Sidebar>
+          <main className={`reader-main ${paper ? "has-paper" : ""}`}>
+            {hydrated && (paper || storageStatus) && (
+              <div className="local-reading-controls">
+                {" "}
+                <button
+                  className="text-button"
+                  aria-pressed={localSave}
+                  onClick={() => {
+                    storageGeneration.current++;
+                    setLocalSave((v) => !v);
+                    setStorageStatus(
+                      localSave
+                        ? "自动保存已关闭，已有保存仍保留。"
+                        : "自动保存已开启。",
+                    );
+                  }}
+                >
+                  本地保存{localSave ? "：开" : "：关"}
+                </button>
+                <button
+                  className="text-button"
+                  onClick={() => void forgetSavedReading()}
+                >
+                  清除本地保存
+                </button>
+              </div>
+            )}
+            {storageStatus && (
+              <p className="privacy-note" role="status">
+                {storageStatus}
+              </p>
+            )}
+            {error && (
+              <div className="error-banner" role="alert">
+                <span>{error}</span>
+                <button onClick={() => setError("")} aria-label="关闭错误提示">
+                  <X size={16} />
+                </button>
+              </div>
+            )}
+            {!hydrated ? (
+              <p role="status">正在检查本地阅读记录…</p>
+            ) : !paper ? (
+              <>
+                <div className="eyebrow">YOUR NEXT PAPER</div>
+                <h1>
+                  把论文读懂，
+                  <br />
+                  <em>从这里开始。</em>
+                </h1>
+                <p className="intro">原文在左，理解在旁。带着问题读每一段。</p>
+                {importForm}
+                <p className="privacy-note">
+                  文件在浏览器中读取。使用 AI
+                  时，相关文本和页面图像会发送至所选模型服务商；阅读默认保存到本机浏览器，刷新后可恢复；可关闭或清除本地保存，API
+                  Key 不会保存。
+                </p>
+                <div className="capabilities">
+                  <div>
+                    <Languages />
+                    <b>对照翻译</b>
+                    <p>逐段对应，核对术语与公式。</p>
+                  </div>
+                  <div>
+                    <BookOpen />
+                    <b>内容讲解</b>
+                    <p>从核心观点走到推导细节。</p>
+                  </div>
+                  <div>
+                    <Quote />
+                    <b>选段提问</b>
+                    <p>引用原文，让问题更具体。</p>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="document-eyebrow">
+                  <span>
+                    {paper.kind === "pdf" ? "PDF PAPER" : "TEXT PAPER"}
+                  </span>
+                  <span>
+                    {paper.pages.length}{" "}
+                    {paper.kind === "pdf" ? "节" : "个片段"}
+                  </span>
+                </div>
+                <h1 className="document-title">{paper.title}</h1>
+                <div className="document-actions">
+                  <div>
+                    {paper.url && (
+                      <a href={paper.url} target="_blank" rel="noopener">
+                        打开原 PDF <ArrowUpRight size={14} />
+                      </a>
+                    )}
+                    <span>
+                      第 {page + 1} / {paper.pages.length} 节
+                    </span>
+                  </div>
+                  <div className="page-controls">
+                    <button
+                      disabled={page === 0}
+                      onClick={() => goTo(page - 1)}
+                      aria-label="上一节"
+                    >
+                      <ChevronLeft size={18} />
+                    </button>
+                    <button
+                      disabled={page === paper.pages.length - 1}
+                      onClick={() => goTo(page + 1)}
+                      aria-label="下一节"
+                    >
+                      <ChevronRight size={18} />
+                    </button>
+                  </div>
+                </div>
+                <div className="reading-toolbar">
+                  <Tabs value={mode} onValueChange={setMode}>
+                    <TabsList>
+                      <TabsTrigger value="both">中英对照</TabsTrigger>
+                      <TabsTrigger value="original">原文</TabsTrigger>
+                      {paper.kind === "pdf" && (
+                        <TabsTrigger value="pdf">原页</TabsTrigger>
+                      )}
+                    </TabsList>
+                  </Tabs>
+                  <div className="reader-tools">
+                    <button
+                      type="button"
+                      className={`reader-tool-button ${autoTranslate ? "enabled" : ""}`}
+                      aria-pressed={autoTranslate}
+                      onClick={toggleAutoTranslate}
+                    >
+                      <Languages size={14} />
+                      {autoTranslate ? "连续翻译已开启" : "连续翻译"}
+                    </button>
+                    <button
+                      type="button"
+                      className="reader-tool-button"
+                      disabled={busy || !current?.blocks.length}
+                      onClick={() => void highlightSection()}
+                    >
+                      <Sparkles size={14} />
+                      AI重点
+                    </button>
+                    <button
+                      className="explain-page"
+                      disabled={busy}
+                      onClick={() => {
+                        void ask("explain");
+                        if (window.innerWidth < 931) showPanel();
+                      }}
+                    >
+                      <Sparkles size={15} />
+                      讲解本节
+                    </button>
+                  </div>
+                </div>
+                <div className="translation-actions">
+                  {selected.length > 0 && (
+                    <button
+                      className="secondary"
+                      disabled={busy}
+                      onClick={() => void translateChecked()}
+                    >
+                      <Languages size={15} />
+                      翻译勾选段落
+                    </button>
+                  )}
+                  <button
+                    className="primary"
+                    disabled={busy || current?.scanned}
+                    onClick={() => void translate()}
+                  >
+                    <Languages size={15} />
+                    翻译本节
+                  </button>
+                  <button
+                    className="secondary"
+                    disabled={busy || completePages === paper.pages.length}
+                    onClick={() => void translate(true)}
+                  >
+                    翻译全文
+                  </button>
+                  {busy && (
+                    <button className="text-button" onClick={stop}>
+                      <StopCircle size={14} />
+                      停止
+                    </button>
+                  )}
+                  <span>
+                    {connected
+                      ? "保留公式、数字和不确定性"
+                      : "连接 AI 后可翻译与提问"}
+                  </span>
+                </div>
+                {missingPages.length > 0 && (
+                  <p className="scan-notice" role="status">
+                    原第 {missingPages.join("、")}{" "}
+                    页需要识别；这些页面尚未计入已完成翻译。
+                  </p>
+                )}
+                {status && (
+                  <div className="work-status" role="status">
+                    {busy && <LoaderCircle size={14} className="spin" />}
+                    {status}
+                  </div>
+                )}
+                {paper.kind === "pdf" && missingPages.includes(sourcePage) && (
+                  <div className="scan-notice">
+                    <ScanText size={22} />
+                    <div>
+                      <b>原第 {sourcePage} 页没有足够的可选文字</b>
+                      <p>可查看原页，或使用 AI 识别这一页的文字。</p>
+                      <button disabled={busy} onClick={() => void ocr()}>
+                        识别本页文字 <ArrowUpRight size={14} />
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {paper.kind === "pdf" && mode !== "pdf" && (
+                  <details className="inline-pdf" open>
+                    <summary>
+                      原页图表与公式 · 第 {sourcePage} 页{" "}
+                      <span>点击折叠 / 展开</span>
+                    </summary>
+                    <div className="inline-pdf-content">
+                      {sourcePages.length > 1 && (
+                        <div className="source-pages">
+                          <span>原页：</span>
+                          {sourcePages.map((n) => (
+                            <button
+                              key={n}
+                              className={n === sourcePage ? "active" : ""}
+                              onClick={() => setSourcePage(n)}
+                            >
+                              {n}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      {imageLoading ? (
+                        <div className="loading-state">
+                          <LoaderCircle className="spin" />
+                          正在显示图表…
+                        </div>
+                      ) : pageImage ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => setMode("pdf")}
+                            title="切换到原页视图"
+                          >
+                            <img
+                              src={pageImage}
+                              alt={`论文第 ${sourcePage} 页原版，包括图表、公式和排版`}
+                            />
+                          </button>
+                          <p>
+                            点击图像切换到原页视图；需要更大画面可用“打开原
+                            PDF”。
+                          </p>
+                        </>
+                      ) : (
+                        <>
+                          {paper.url ? (
+                            <iframe
+                              title={`论文第 ${sourcePage} 页原版`}
+                              src={`${paper.url}#page=${sourcePage}`}
+                            />
+                          ) : (
+                            <p>{imageError || "原页暂不可用。"}</p>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </details>
+                )}
+                {mode === "pdf" ? (
+                  <div className="pdf-preview">
+                    {cropMode && (
+                      <p className="crop-help">
+                        拖动框选公式或图表，松开后点“使用截图”。{" "}
+                        <button
+                          onClick={() => {
+                            setCropMode(false);
+                            setCropBox(null);
+                          }}
+                        >
+                          取消
+                        </button>
+                      </p>
+                    )}
+                    {imageLoading ? (
+                      <div className="loading-state">
+                        <LoaderCircle className="spin" />
+                        正在显示原页…
+                      </div>
+                    ) : pageImage ? (
+                      <div
+                        ref={cropRef}
+                        className={`crop-surface ${cropMode ? "cropping" : ""}`}
+                        onPointerDown={(e) => {
+                          if (!cropMode) return;
+                          e.currentTarget.setPointerCapture(e.pointerId);
+                          const p = cropPoint(e);
+                          setCropStart(p);
+                          setCropBox({ x: p.x, y: p.y, w: 0, h: 0 });
+                        }}
+                        onPointerMove={(e) => {
+                          if (!cropMode || !cropStart) return;
+                          const p = cropPoint(e);
+                          setCropBox({
+                            x: Math.min(p.x, cropStart.x),
+                            y: Math.min(p.y, cropStart.y),
+                            w: Math.abs(p.x - cropStart.x),
+                            h: Math.abs(p.y - cropStart.y),
+                          });
+                        }}
+                        onPointerUp={() => setCropStart(null)}
+                      >
+                        <img
+                          draggable={false}
+                          src={pageImage}
+                          alt={`原论文第 ${sourcePage} 页`}
+                        />
+                        {cropBox && (
+                          <div
+                            className="crop-selection"
+                            style={{
+                              left: `${cropBox.x * 100}%`,
+                              top: `${cropBox.y * 100}%`,
+                              width: `${cropBox.w * 100}%`,
+                              height: `${cropBox.h * 100}%`,
+                            }}
+                          />
+                        )}
+                      </div>
+                    ) : (
+                      <p>{imageError || "此页预览不可用。"}</p>
+                    )}
+                    {cropMode &&
+                      cropBox &&
+                      cropBox.w > 0.015 &&
+                      cropBox.h > 0.015 && (
+                        <button className="primary" onClick={cropEnd}>
+                          使用截图提问
+                        </button>
+                      )}
+                  </div>
+                ) : (
+                  <div className="paragraphs">
+                    {current?.blocks.map((b, i) => {
+                      const highlighted =
+                        autoHighlights[page]?.some((c) => c.id === b.id) ===
+                        true;
+                      return (
+                        <section
+                          className={`paper-block ${selected.includes(b.id) || excerpt?.ids.includes(b.id) ? "selected" : ""} ${highlighted ? "ai-highlighted" : ""}`}
+                          id={b.id}
+                          data-paper-block={b.id}
+                          key={b.id}
+                        >
+                          <div className="block-header">
+                            <Checkbox
+                              checked={selected.includes(b.id)}
+                              onCheckedChange={(on) =>
+                                toggleBlock(b.id, on === true)
+                              }
+                              aria-label={`引用第 ${b.page} 页第 ${i + 1} 段`}
+                            />
+                            <span>
+                              原文{" "}
+                              <span className="block-num">
+                                {String(i + 1).padStart(2, "0")}
+                              </span>
+                            </span>
+                            {highlighted && (
+                              <span className="highlight-flag">
+                                <Sparkles size={11} />
+                                AI重点
+                              </span>
+                            )}
+                            <span className="block-source">
+                              p. {b.page} · {b.id}
+                            </span>
+                          </div>
+                          {formulaDominant(b) ? (
+                            <>
+                              <FormulaImage
+                                block={b}
+                                renderImage={renderImage}
+                              />
+                              <details className="formula-extracted">
+                                <summary>查看 PDF 提取文字</summary>
+                                <div
+                                  className="source-text"
+                                  data-translation-source={b.id}
+                                >
+                                  {b.text}
+                                </div>
+                              </details>
+                            </>
+                          ) : (
+                            <>
+                              <div
+                                className="source-text"
+                                data-translation-source={b.id}
+                              >
+                                {b.text}
+                              </div>
+                              {b.formulaCrop && (
+                                <details className="formula-reference">
+                                  <summary>核对原稿公式</summary>
+                                  <FormulaImage
+                                    block={b}
+                                    renderImage={renderImage}
+                                  />
+                                </details>
+                              )}
+                            </>
+                          )}
+                          {paper.kind === "pdf" &&
+                            suspiciousFormula(b.text) &&
+                            !b.formulaCrop && (
+                              <div className="formula-warning">
+                                这段可能含有 PDF 编码异常的公式。
+                                <button
+                                  onClick={() => {
+                                    setSourcePage(b.page);
+                                    setMode("pdf");
+                                  }}
+                                >
+                                  查看原页公式
+                                </button>
+                              </div>
+                            )}
+                          {mode === "both" && (
+                            <div
+                              className={`translation ${translations[b.id] ? "filled" : ""}`}
+                            >
+                              <div className="translation-label">
+                                <span>译</span>
+                                {translations[b.id] ? "中文译文" : "等待翻译"}
+                              </div>
+                              {translations[b.id] ? (
+                                <RichText text={translations[b.id]} />
+                              ) : (
+                                <p>点击“翻译本节”，在这里对照阅读中文译文。</p>
+                              )}
+                            </div>
+                          )}
+                        </section>
+                      );
+                    })}
+                  </div>
+                )}
+                {(pageNotes[page + 1] || []).length > 0 && (
+                  <div className="translation-notes">
+                    <b>需要核对</b>
+                    {pageNotes[page + 1].map((n, i) => (
+                      <p key={i}>{n}</p>
+                    ))}
+                  </div>
+                )}
+                {paper.kind === "pdf" && sourcePages.length > 1 && (
+                  <div className="source-pages">
+                    <span>本节原页：</span>
+                    {sourcePages.map((n) => (
+                      <button
+                        key={n}
+                        className={n === sourcePage ? "active" : ""}
+                        onClick={() => setSourcePage(n)}
+                      >
+                        {n}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <div className="bottom-pagination">
+                  <button disabled={page === 0} onClick={() => goTo(page - 1)}>
+                    <ChevronLeft size={15} />
+                    上一节
+                  </button>
+                  <span>
+                    {page + 1} / {paper.pages.length} 节
+                  </span>
+                  <button
+                    disabled={page === paper.pages.length - 1}
+                    onClick={() => goTo(page + 1)}
+                  >
+                    下一节
+                    <ChevronRight size={15} />
+                  </button>
+                </div>
+                <p className="reading-footnote">
+                  PDF 文字可能有分栏或公式识别误差，请切换“原页”核对。AI
+                  译文与讲解不替代原文。
+                </p>
+              </>
+            )}
+          </main>
+          <aside className="assistant-panel">{panel}</aside>
+        </div>
+      </SidebarProvider>
+      <Dialog open={importOpen} onOpenChange={setImportOpen}>
+        <DialogContent className="import-dialog">
+          <DialogHeader>
+            <DialogTitle>导入一篇新论文</DialogTitle>
+            <DialogDescription>
+              新论文会替换当前阅读内容与问答记录。
+            </DialogDescription>
+          </DialogHeader>
+          {error && <p className="dialog-error">{error}</p>}
+          {importForm}
+        </DialogContent>
+      </Dialog>
+      <Dialog open={connectOpen} onOpenChange={setConnectOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>连接论文助手</DialogTitle>
+            <DialogDescription>
+              选择服务商并填入对应的 API Key，即可使用翻译、讲解和选段提问。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="connection-detail">
+            <label className="field-label" htmlFor="ai-provider">
+              模型服务
+            </label>
+            <select
+              id="ai-provider"
+              className="text-input"
+              value={provider}
+              onChange={(e) => {
+                setProvider(e.target.value as "deepseek" | "openai");
+                setApiKey("");
+              }}
+            >
+              <option value="deepseek">DeepSeek（deepseek-flash）</option>
+              <option value="openai">OpenAI</option>
+            </select>
+            <label className="field-label" htmlFor="openai-key">
+              {provider === "deepseek" ? "DeepSeek" : "OpenAI"} API Key
+            </label>
+            <input
+              id="openai-key"
+              className="text-input"
+              type="password"
+              autoComplete="off"
+              spellCheck={false}
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder="sk-…"
+            />
+            <p className="privacy-note">
+              仅保留在当前页面内存中，刷新即清除。发起请求时，密钥由本站服务用于向所选模型服务发起请求；请只在你信任的设备上输入。调用可能产生所选服务商的
+              API 费用。
+            </p>
+            {provider === "openai" && configured && (
+              <p>站点也已配置 OpenAI 模型服务；留空可使用站点配置。</p>
+            )}
+            {statusError && <p role="alert">{statusError}</p>}
+            <div className="key-actions">
+              <button
+                className="secondary"
+                onClick={() => setApiKey("")}
+                disabled={!apiKey}
+              >
+                清除密钥
+              </button>
+              <button
+                className="primary"
+                onClick={() => setConnectOpen(false)}
+                disabled={!connected}
+              >
+                完成
+              </button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+      <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
+        <SheetContent side="right" className="mobile-assistant">
+          <SheetHeader className="sr-only">
+            <SheetTitle>论文助手</SheetTitle>
+            <SheetDescription>查看引用原文并提问。</SheetDescription>
+          </SheetHeader>
+          {panel}
+        </SheetContent>
+      </Sheet>
+      {paper && (
+        <button className="mobile-question" onClick={showPanel}>
+          <PanelRightOpen size={17} />
+          选段提问{chosen.length > 0 && <span>{chosen.length}</span>}
+        </button>
+      )}
+      {autoTranslation && (
+        <aside
+          className="selection-translation-card"
+          style={{ left: autoTranslation.x, top: autoTranslation.y }}
+          onPointerDown={(e) => e.stopPropagation()}
+          role="status"
+        >
+          <div className="selection-translation-heading">
+            <Languages size={15} />
+            选中内容 · 中文译文
+            <button
+              type="button"
+              onPointerDown={(e) => e.preventDefault()}
+              onClick={() => {
+                autoController.current?.abort();
+                autoKey.current = "";
+                setAutoTranslation(null);
+                window.getSelection()?.removeAllRanges();
+              }}
+              aria-label="关闭选中译文"
+            >
+              <X size={15} />
+            </button>
+          </div>
+          {autoTranslation.error ? (
+            <p className="selection-translation-error">
+              {autoTranslation.error}
+            </p>
+          ) : autoTranslation.translation ? (
+            <RichText text={autoTranslation.translation} />
+          ) : connected ? (
+            <p>正在翻译…</p>
+          ) : (
+            <p>
+              连接 AI 后，划选原文即可自动翻译。
+              <button
+                type="button"
+                onPointerDown={(e) => e.preventDefault()}
+                onClick={() => setConnectOpen(true)}
+              >
+                连接 AI
+              </button>
+            </p>
+          )}
+          <button
+            type="button"
+            className="ask-selection-from-card"
+            onPointerDown={(e) => e.preventDefault()}
+            onClick={askFromAutoSelection}
+          >
+            <Quote size={14} />
+            引用这段提问 <ArrowUpRight size={14} />
+          </button>
+        </aside>
+      )}
+    </>
+  );
 }
