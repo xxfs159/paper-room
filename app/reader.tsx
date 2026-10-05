@@ -50,6 +50,7 @@ import Markdown from "react-markdown";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import type { PDFDocumentProxy } from "pdfjs-dist";
+import pdfWorkerUrl from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
 import {
   extractBlocks,
   fromText,
@@ -671,8 +672,8 @@ export default function PaperReader({
       const signature = new TextDecoder().decode(buffer.slice(0, 1024));
       if (!signature.includes("%PDF-"))
         throw new Error("这不是有效的 PDF 文件。");
-      const pdfjs = await import("pdfjs-dist");
-      pdfjs.GlobalWorkerOptions.workerSrc = "/pdfjs/pdf.worker.mjs";
+      const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+      pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
       doc = await pdfjs.getDocument({
         data: new Uint8Array(buffer),
         cMapUrl: "/pdfjs/cmaps/",
