@@ -31,6 +31,8 @@ pnpm dev
 
 在开发环境打开终端显示的本地地址。本地模拟登录只接受来自回环地址的 localhost 请求；部署版的登录依赖 Sites 提供的 ChatGPT 身份验证。无需把 API Key 写入仓库，直接在网页「连接 AI」输入。
 
+PDF 渲染使用 PDF.js 的兼容构建。`pnpm dev` 和 `pnpm build` 会从已安装的同版本依赖生成静态 worker，避免版本不匹配或开发服务器把页面脚本注入 worker；生成文件不提交到 Git。
+
 普通 checkout 不需要 `.openai/hosting.json`：缺失时不会配置 D1/R2 本地绑定，构建也不会生成虚构的部署元数据。使用 Sites 部署时，需由部署平台提供真实的 `.openai/hosting.json`；已有配置会原样复制到构建目录。损坏的配置会明确报错。当前阅读功能使用浏览器 IndexedDB，不使用服务端数据库；如果以后启用 D1/R2，须配置相应绑定。其他托管环境需要实现可信的身份验证，不能直接信任客户端提交的身份请求头。
 
 ```bash

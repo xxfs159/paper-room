@@ -53,3 +53,6 @@ site.tar.gz
 
 # Generated TypeScript state
 *.tsbuildinfo
+
+# Generated from the installed PDF.js package before dev/build.
+/public/pdfjs/pdf.worker.mjs
