@@ -146,6 +146,12 @@ function mixedPDF(): Buffer {
 test("a lightly extracted PDF page has an OCR entry and remains recoverable after OCR", async ({
   page,
 }) => {
+  const renderErrors: string[] = [];
+  page.on("pageerror", (error) => renderErrors.push(error.message));
+  page.on("console", (message) => {
+    if (message.text().includes("Setting up fake worker"))
+      renderErrors.push(message.text());
+  });
   await mockAI(page);
   await page.goto("/");
   await page
@@ -189,4 +195,5 @@ test("a lightly extracted PDF page has an OCR entry and remains recoverable afte
   await expect(
     page.getByRole("button", { name: /第 2 页 · 待识别/ }),
   ).toHaveCount(0);
+  expect(renderErrors).toEqual([]);
 });
